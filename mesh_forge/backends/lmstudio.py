@@ -110,6 +110,35 @@ class LMStudioClient:
         except Exception:
             return False
 
+    def list_models(self) -> list[str]:
+        """Return model IDs exposed by LM Studio (loaded models)."""
+        try:
+            response = self.client.models.list()
+            ids = [m.id for m in response.data if getattr(m, "id", None)]
+            return sorted(set(ids))
+        except Exception:
+            return []
+
+    def models_status(self) -> str:
+        if not self.health_check():
+            return "LM Studio API недоступен. Запустите Local Server в LM Studio."
+        models = self.list_models()
+        if not models:
+            return (
+                "API отвечает, но моделей нет. Загрузите модель в LM Studio "
+                "(Chat → Load model) и обновите список."
+            )
+        lines = [f"Доступно моделей: {len(models)}", ""]
+        for mid in models:
+            mark = []
+            if mid == self.config.llm.planner_model:
+                mark.append("planner")
+            if mid == self.config.llm.vision_model:
+                mark.append("vision")
+            suffix = f" ← {', '.join(mark)}" if mark else ""
+            lines.append(f"  • {mid}{suffix}")
+        return "\n".join(lines)
+
 
 def _parse_json_response(text: str) -> dict[str, Any]:
     text = text.strip()

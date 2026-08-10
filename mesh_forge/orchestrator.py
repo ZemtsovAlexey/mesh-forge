@@ -16,7 +16,13 @@ from mesh_forge.render import render_mesh_preview
 
 class Orchestrator:
     def __init__(self):
-        self.llm = LMStudioClient()
+        self.reload_config()
+
+    def reload_config(self) -> None:
+        from mesh_forge.config import load_config
+
+        self.config = load_config()
+        self.llm = LMStudioClient(self.config)
 
     def create_photo(
         self, manifest: ProjectManifest, image_path: Path, **kwargs: Any
