@@ -1,0 +1,44 @@
+app.py
+  0ccc43710f63791f 47-48
+deploy/deploy.config.example.json
+  0ccc43710f63791f 13-19
+deploy/lib/Remote.ps1
+  0ccc43710f63791f 12-23,33-88,99-101,103-171,173-187,189-191,193-201,203-255,257-276
+deploy/README.md
+  0ccc43710f63791f 147,149-161,163
+deploy/scripts/01-bootstrap-ssh-server.ps1
+  0ccc43710f63791f 40-45
+deploy/scripts/04-deploy-remote.ps1
+  0ccc43710f63791f 25
+deploy/scripts/07-deploy-app.ps1
+  0ccc43710f63791f 1-7,16-18,21-27,29-41,44-61,64
+mesh_forge/mesh_qc.py
+  0ccc43710f63791f 44-72,83,85-88,97-102,110
+mesh_forge/ops/geometry.py
+  0ccc43710f63791f 11-19
+mesh_forge/ops/repair.py
+  0ccc43710f63791f 8-9,21-27,33-37,39,43,49,51-63,65-66,72-76,88-92,94-96,98-116,118-119
+mesh_forge/pipeline/scan.py
+  0ccc43710f63791f 6,14-22
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "git-ai-lite-1.0.0",
+  "base_commit_sha": "e0b05d2d3c6a530278f2335a99ad474eb0b7e0fd",
+  "prompts": {
+    "0ccc43710f63791f": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "c4a2a513-edcd-4d09-8deb-13e087f7e0af",
+        "model": "composer-2.5"
+      },
+      "human_author": "╨Ч╨╡╨╝╤Ж╨╛╨▓ ╨Р╨╗╨╡╨║╤Б╨╡╨╣ <zemtsov@moedelo.org>",
+      "messages": [],
+      "total_additions": 543,
+      "total_deletions": 160,
+      "accepted_lines": 446,
+      "accepted_deletions": 63,
+      "overridden_lines": 97
+    }
+  }
+}
