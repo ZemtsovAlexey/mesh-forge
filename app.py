@@ -44,7 +44,8 @@ def on_create_project(name: str):
     return gr.update(choices=choices, value=p.id), f"Created: {p.name}"
 
 
-def _preview_for(manifest: ProjectManifest | None):
+def _preview_for(project_id: str | None):
+    manifest = _load_manifest(project_id)
     if not manifest:
         return None, "No project selected"
     mesh = manifest.current_mesh_path()

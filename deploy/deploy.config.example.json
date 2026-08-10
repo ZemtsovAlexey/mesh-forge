@@ -10,6 +10,13 @@
     "remoteAppRoot": "C:/AI/mesh-forge",
     "remoteTripoSR": "C:/AI/TripoSR"
   },
+  "git": {
+    "remoteUrl": "https://github.com/ZemtsovAlexey/mesh-forge.git",
+    "branch": "main"
+  },
+  "deploy": {
+    "method": "auto"
+  },
   "ports": {
     "meshforge": 7860,
     "lmstudio": 1234

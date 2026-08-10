@@ -37,6 +37,12 @@ $c = Get-Content $config -Raw
 $c = $c -replace "(?m)^#?\s*PubkeyAuthentication.*", "PubkeyAuthentication yes"
 $c = $c -replace "(?m)^#?\s*PasswordAuthentication.*", "PasswordAuthentication yes"
 Set-Content $config $c -Encoding UTF8
+
+# Interactive SSH must land in Windows PowerShell, not WSL bash (breaks deploy scripts).
+$openSshKey = "HKLM:\SOFTWARE\OpenSSH"
+if (-not (Test-Path $openSshKey)) { New-Item -Path $openSshKey -Force | Out-Null }
+Set-ItemProperty -Path $openSshKey -Name DefaultShell -Value "$env:WINDIR\System32\WindowsPowerShell\v1.0\powershell.exe" -Type String
+
 Restart-Service sshd
 
 Write-Host "Done. SSH user for client: $env:USERNAME" -ForegroundColor Green

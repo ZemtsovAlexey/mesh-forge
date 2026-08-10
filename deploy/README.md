@@ -144,9 +144,24 @@ ssh zemet@192.168.0.22 "powershell -Command Get-Content C:\AI\install-meshforge.
    icacls C:\ProgramData\ssh\administrators_authorized_keys /inheritance:r /grant "*S-1-5-32-544:(F)" /grant "SYSTEM:F"
    ```
 
-### SCP зависает
+### Деплой кода приложения
 
-Скрипт `04-deploy-remote.ps1` передаёт файлы через **base64 + SSH** (обход зависания scp).
+```powershell
+# Первый раз: инициализировать git на сервере
+.\deploy.ps1 init-git
+
+# Обычный деплой (git pull на сервере, fallback — архив)
+.\deploy.ps1 deploy-app
+
+# С push в GitHub перед pull:
+.\deploy\scripts\07-deploy-app.ps1 -Push
+```
+
+**Git (рекомендуется):** `C:\AI\mesh-forge` — git-репозиторий, `deploy-app` делает `git pull` (~5 с).
+
+**Запасной путь:** zip → один SSH через stdin (~2 с), если git недоступен.
+
+`venv/`, `projects/`, `config.yaml` на сервере не трогаются (в `.gitignore`).
 
 ### SSH выполняет bash вместо PowerShell
 

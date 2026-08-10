@@ -1,6 +1,10 @@
 # MeshForge-specific
 deploy/deploy.config.json
 projects/
+config.yaml
+ui-stdout.log
+ui-stderr.log
+.deploy.zip
 
 # Python (GitHub template)
 __pycache__/

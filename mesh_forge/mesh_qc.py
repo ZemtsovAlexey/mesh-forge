@@ -40,11 +40,36 @@ class MeshStats:
 
 
 def analyze_mesh(mesh_path: Path) -> MeshStats:
-    mesh = trimesh.load(mesh_path, force="mesh", process=False)
-    if isinstance(mesh, trimesh.Scene):
-        mesh = trimesh.util.concatenate(tuple(mesh.geometry.values()))
-
     issues: list[str] = []
+
+    if not mesh_path.is_file():
+        issues.append("Mesh file not found")
+        return MeshStats(issues=issues)
+    if mesh_path.stat().st_size == 0:
+        issues.append("Mesh file is empty")
+        return MeshStats(issues=issues)
+
+    loaded = trimesh.load(mesh_path, force="mesh", process=False)
+    if isinstance(loaded, trimesh.Scene):
+        geoms = [g for g in loaded.geometry.values() if hasattr(g, "vertices")]
+        if not geoms:
+            issues.append("Scene contains no geometry")
+            return MeshStats(issues=issues)
+        mesh = trimesh.util.concatenate(geoms)
+    else:
+        mesh = loaded
+
+    if mesh is None or len(getattr(mesh, "vertices", [])) == 0:
+        issues.append("Mesh has no vertices")
+        return MeshStats(issues=issues)
+    if len(getattr(mesh, "faces", [])) == 0:
+        issues.append("Mesh has no faces")
+        return MeshStats(
+            triangle_count=0,
+            vertex_count=len(mesh.vertices),
+            issues=issues,
+        )
+
     if not mesh.is_watertight:
         issues.append("Mesh is not watertight (holes or open edges)")
     if not mesh.is_winding_consistent:
@@ -55,8 +80,12 @@ def analyze_mesh(mesh_path: Path) -> MeshStats:
     if min_edge is not None and min_edge < 0.1:
         issues.append(f"Very small edges detected (min {min_edge:.3f} mm)")
 
+    extents = None
     bbox = mesh.bounds
-    extents = (bbox[1] - bbox[0]).tolist()
+    if bbox is not None and len(bbox) == 2:
+        extents = (bbox[1] - bbox[0]).tolist()
+    else:
+        issues.append("Could not compute bounding box")
 
     volume = None
     if mesh.is_watertight:
@@ -65,6 +94,12 @@ def analyze_mesh(mesh_path: Path) -> MeshStats:
         except Exception:
             issues.append("Could not compute volume")
 
+    surface_area = None
+    try:
+        surface_area = float(mesh.area)
+    except Exception:
+        issues.append("Could not compute surface area")
+
     return MeshStats(
         triangle_count=len(mesh.faces),
         vertex_count=len(mesh.vertices),
@@ -72,7 +107,7 @@ def analyze_mesh(mesh_path: Path) -> MeshStats:
         winding_consistent=bool(mesh.is_winding_consistent),
         bbox_mm=extents,
         volume_mm3=volume,
-        surface_area_mm2=float(mesh.area),
+        surface_area_mm2=surface_area,
         min_edge_mm=min_edge,
         issues=issues or None,
     )

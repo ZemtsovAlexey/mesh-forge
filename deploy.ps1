@@ -1,4 +1,4 @@
-﻿param([ValidateSet("bootstrap","copy-key","deploy","verify","redeploy","deploy-app")][string]$Action = "deploy")
+﻿param([ValidateSet("bootstrap","copy-key","deploy","verify","redeploy","deploy-app","init-git")][string]$Action = "deploy")
 $scriptDir = Join-Path $PSScriptRoot "deploy\scripts"
 switch ($Action) {
     "bootstrap" { Write-Host "Run ON SERVER as Admin: $scriptDir\01-bootstrap-ssh-server.ps1"; exit 0 }
@@ -7,4 +7,5 @@ switch ($Action) {
     "verify"    { & "$scriptDir\05-verify-deployment.ps1"; break }
     "redeploy"  { & "$scriptDir\06-redeploy.ps1"; break }
     "deploy-app"{ & "$scriptDir\07-deploy-app.ps1"; break }
+    "init-git"  { & "$scriptDir\08-init-git-server.ps1"; break }
 }

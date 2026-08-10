@@ -22,7 +22,7 @@ if (-not (Test-RemoteSsh -RemoteUser $ru -RemoteHost $rh -SshPort $port)) {
 }
 Write-Host "SSH OK" -ForegroundColor Green
 
-Send-RemoteFile -LocalPath (Join-Path $scripts "03-install-server.ps1") `
+Send-RemoteFile -LocalPath (Join-Path $PSScriptRoot "03-install-server.ps1") `
     -RemotePath "$remoteDir/03-install-server.ps1" -RemoteUser $ru -RemoteHost $rh -SshPort $port
 Send-RemoteFile -LocalPath (Join-Path $projectRoot "requirements-server.txt") `
     -RemotePath "$remoteDir/requirements-server.txt" -RemoteUser $ru -RemoteHost $rh -SshPort $port

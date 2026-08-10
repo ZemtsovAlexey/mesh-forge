@@ -8,10 +8,15 @@ import trimesh
 
 
 def load_mesh(path: Path) -> trimesh.Trimesh:
-    mesh = trimesh.load(path, force="mesh", process=False)
-    if isinstance(mesh, trimesh.Scene):
-        mesh = trimesh.util.concatenate(tuple(mesh.geometry.values()))
-    return mesh
+    loaded = trimesh.load(path, force="mesh", process=False)
+    if isinstance(loaded, trimesh.Scene):
+        geoms = [g for g in loaded.geometry.values() if hasattr(g, "vertices") and len(g.vertices) > 0]
+        if not geoms:
+            raise ValueError(f"No geometry in mesh file: {path}")
+        loaded = trimesh.util.concatenate(geoms)
+    if len(loaded.vertices) == 0:
+        raise ValueError(f"Mesh has no vertices: {path}")
+    return loaded
 
 
 def save_mesh(mesh: trimesh.Trimesh, path: Path) -> Path:
