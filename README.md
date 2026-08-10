@@ -16,9 +16,25 @@ copy deploy\deploy.config.example.json deploy\deploy.config.json
 
 План разработки: **[PLAN.md](PLAN.md)**
 
+## Запуск UI
+
+**На сервере (DESKTOP-HOME):**
+```powershell
+copy config.yaml.example config.yaml
+# заполните paths: blender, openscad, triposr
+C:\AI\mesh-forge\venv\Scripts\python.exe app.py
+```
+
+**С Z13 — деплой кода на сервер:**
+```powershell
+.\deploy.ps1 deploy-app
+```
+
+UI: http://192.168.0.22:7860
+
 ## Текущий статус
 
 - ✅ SSH: `zemet@192.168.0.22`
-- ✅ Серверный стек установлен (PyTorch CUDA, TripoSR, Blender, OpenSCAD)
-- ⏳ LM Studio + модели (вручную)
-- ⏳ MeshForge UI (в разработке)
+- ✅ Серверный стек (PyTorch CUDA, TripoSR, Blender, OpenSCAD)
+- ✅ MeshForge app + Gradio UI
+- ⏳ LM Studio + модели (вручную на сервере)

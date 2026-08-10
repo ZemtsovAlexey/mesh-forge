@@ -1,0 +1,20 @@
+llm:
+  provider: lmstudio
+  base_url: "http://127.0.0.1:1234/v1"
+  api_key: "lm-studio"
+  planner_model: "qwen2.5-7b-instruct"
+  vision_model: "qwen2.5-vl-7b-instruct"
+
+paths:
+  blender: ""
+  openscad: ""
+  triposr: ""
+  projects: "projects"
+
+server:
+  host: "0.0.0.0"
+  port: 7860
+
+gpu:
+  vram_gb: 8
+  sequential_models: true
