@@ -252,11 +252,14 @@ function bindActions() {
   $("#btn-photo").addEventListener("click", () => {
     const file = $("#photo-file").files?.[0];
     if (!file) return toast("Выберите фото", "error");
+    const backend = $("#photo-backend")?.value || "hunyuan3d";
     const fd = new FormData();
     fd.append("image", file);
     fd.append("remove_bg", $("#photo-rmbg").checked);
     fd.append("solidify_mm", $("#photo-solid").value);
-    runOp("TripoSR: фото → 3D…", () => api(`/api/projects/${activeProjectId}/photo`, { method: "POST", body: fd }));
+    fd.append("backend", backend);
+    const label = backend === "triposr" ? "TripoSR: фото → 3D…" : "Hunyuan3D: фото → 3D…";
+    runOp(label, () => api(`/api/projects/${activeProjectId}/photo`, { method: "POST", body: fd }));
   });
 
   $("#btn-scan").addEventListener("click", () => {

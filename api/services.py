@@ -113,10 +113,15 @@ def create_photo(
     *,
     remove_bg: bool,
     solidify_mm: float,
+    backend: str | None = None,
 ) -> OperationResult:
     def _run():
         return orch.create_photo(
-            manifest, image_path, remove_bg=remove_bg, solidify_mm=solidify_mm
+            manifest,
+            image_path,
+            remove_bg=remove_bg,
+            solidify_mm=solidify_mm,
+            backend=backend,
         )
 
     return run_safe(orch, _run, operation="photo", project_id=manifest.id)

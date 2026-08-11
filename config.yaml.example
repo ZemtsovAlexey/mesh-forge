@@ -18,4 +18,13 @@ gpu:
 docker:
   enabled: true
   triposr_image: meshforge/triposr:latest
+  hunyuan_image: meshforge/hunyuan3d:latest
+  hunyuan_model: tencent/Hunyuan3D-2mini
+  hunyuan_subfolder: hunyuan3d-dit-v2-mini-turbo
+  hunyuan_steps: 20
+  hunyuan_octree: 256
+  hunyuan_chunks: 8000
   hf_cache: C:/AI/mesh-forge/.cache/huggingface
+photo:
+  backend: hunyuan3d
+  target_height_mm: 160

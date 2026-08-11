@@ -1,6 +1,6 @@
-# TripoSR Docker
+# Photo → 3D Docker
 
-Изолированный образ для фото → 3D. Убирает необходимость в `venv-triposr` и shim'ах на хосте.
+Два образа: **TripoSR** и **Hunyuan3D-2mini** (shape-only, лучше качество на 8GB).
 
 ## Требования
 
@@ -10,18 +10,20 @@
 
 ## Сборка
 
+### TripoSR
+
 ```powershell
 cd C:\AI\mesh-forge
 .\docker\triposr\build.ps1
 ```
 
-Или:
+### Hunyuan3D-2mini (рекомендуется)
 
 ```powershell
-docker build -f docker/triposr/Dockerfile -t meshforge/triposr:latest .
+.\docker\hunyuan3d\build.ps1
 ```
 
-Первая сборка тянет PyTorch runtime (~3 GB). `torchmcubes` ставится как CPU-shim (без компиляции CUDA) — так Docker Desktop не падает по OOM.
+Первая сборка тянет PyTorch runtime (~3 GB). Первый запуск Hunyuan скачает веса `tencent/Hunyuan3D-2mini` в `hf_cache` (~1–2 GB).
 
 ## Конфиг (`config.yaml`)
 
@@ -29,31 +31,34 @@ docker build -f docker/triposr/Dockerfile -t meshforge/triposr:latest .
 docker:
   enabled: true
   triposr_image: meshforge/triposr:latest
+  hunyuan_image: meshforge/hunyuan3d:latest
+  hunyuan_model: tencent/Hunyuan3D-2mini
+  hunyuan_subfolder: hunyuan3d-dit-v2-mini-turbo
+  hunyuan_steps: 20
+  hunyuan_octree: 256
+  hunyuan_chunks: 8000
   hf_cache: C:/AI/mesh-forge/.cache/huggingface
+photo:
+  backend: hunyuan3d   # или triposr
 ```
 
-При `docker.enabled: true` MeshForge вызывает:
+В UI на вкладке «Фото» можно переключить модель на каждый запуск.
 
-```text
-docker run --gpus all -v <work_dir>:/work -v <hf_cache>:/root/.cache/huggingface \
-  meshforge/triposr:latest /work/input.png --output-dir /work/triposr ...
-```
-
-## Отключить Docker (fallback)
+## Отключить Docker (только TripoSR fallback)
 
 ```yaml
 docker:
   enabled: false
 ```
 
-Тогда используется локальный `paths.triposr` + `venv-triposr` (legacy).
+Тогда TripoSR использует локальный `paths.triposr` + `venv-triposr`. Hunyuan без Docker не поддерживается.
 
 ## Устранение неполадок
 
 ### `error getting credentials` / logon session
 
 В `%USERPROFILE%\.docker\config.json` удалите строку `"credsStore": "desktop"` (бэкап: `config.json.bak`).
-Скрипт `build.ps1` делает это автоматически.
+Скрипты `build.ps1` делают это автоматически.
 
 **Важно:** не сохраняйте файл через `Set-Content -Encoding UTF8` — PowerShell добавляет BOM, и Docker Desktop не запустится (`invalid character 'ï'`). Используйте `build.ps1` или сохраняйте UTF-8 без BOM.
 
@@ -73,10 +78,14 @@ docker pull pytorch/pytorch:2.5.1-cuda12.1-cudnn9-runtime
 
 ## Кэш моделей Hugging Face
 
-Модель `stabilityai/TripoSR` кэшируется в `hf_cache` на хосте — повторные запуски быстрее.
+Модели кэшируются в `hf_cache` на хосте — повторные запуски быстрее.
 
-## Качество меша
+## Качество / VRAM
 
-Marching cubes в образе — через **skimage** (файл `isosurface_skimage.py`), без CUDA-`torchmcubes`.
-Нельзя оставлять свап осей `[2,1,0]` из оригинального TripoSR — он только для torchmcubes; со skimage меш получается сплющенным и «ступенчатым».
-На 8GB по умолчанию: `--mc-resolution 320`.
+| Модель | VRAM (shape) | Заметки |
+|--------|--------------|---------|
+| Hunyuan3D-2mini turbo + flashvdm | ~6–8 GB | Лучше объём/детали, по умолчанию |
+| TripoSR | ~6–8 GB | Быстрее, проще, но чаще «плоский» силуэт |
+
+Hunyuan: только shape (без текстур) — texgen на 8GB не влезает.
+TripoSR: marching cubes через **skimage** (`isosurface_skimage.py`), `--mc-resolution 320` на 8GB.

@@ -55,7 +55,21 @@ class GPUConfig:
 class DockerConfig:
     enabled: bool = True
     triposr_image: str = "meshforge/triposr:latest"
+    hunyuan_image: str = "meshforge/hunyuan3d:latest"
+    hunyuan_model: str = "tencent/Hunyuan3D-2mini"
+    hunyuan_subfolder: str = "hunyuan3d-dit-v2-mini-turbo"
+    hunyuan_steps: int = 20
+    hunyuan_octree: int = 256
+    hunyuan_chunks: int = 8000
     hf_cache: str = ""
+
+
+@dataclass
+class PhotoConfig:
+    # Default photo→3D backend: hunyuan3d | triposr
+    backend: str = "hunyuan3d"
+    # Hunyuan/TripoSR nets are ~unit-sized; scale longest axis to this (mm)
+    target_height_mm: float = 160.0
 
 
 @dataclass
@@ -65,6 +79,7 @@ class AppConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     gpu: GPUConfig = field(default_factory=GPUConfig)
     docker: DockerConfig = field(default_factory=DockerConfig)
+    photo: PhotoConfig = field(default_factory=PhotoConfig)
     config_path: Path = field(default_factory=_find_config)
 
     @property
@@ -98,6 +113,7 @@ def load_config(path: Path | None = None) -> AppConfig:
         server=ServerConfig(**(data.get("server") or {})),
         gpu=GPUConfig(**(data.get("gpu") or {})),
         docker=DockerConfig(**(data.get("docker") or {})),
+        photo=PhotoConfig(**(data.get("photo") or {})),
         config_path=cfg_path,
     )
 
@@ -140,7 +156,17 @@ def save_config(config: AppConfig) -> Path:
     data["docker"] = {
         "enabled": config.docker.enabled,
         "triposr_image": config.docker.triposr_image,
+        "hunyuan_image": config.docker.hunyuan_image,
+        "hunyuan_model": config.docker.hunyuan_model,
+        "hunyuan_subfolder": config.docker.hunyuan_subfolder,
+        "hunyuan_steps": config.docker.hunyuan_steps,
+        "hunyuan_octree": config.docker.hunyuan_octree,
+        "hunyuan_chunks": config.docker.hunyuan_chunks,
         "hf_cache": config.docker.hf_cache or str(config.hf_cache_dir),
+    }
+    data["photo"] = {
+        "backend": config.photo.backend,
+        "target_height_mm": config.photo.target_height_mm,
     }
 
     cfg_path.parent.mkdir(parents=True, exist_ok=True)

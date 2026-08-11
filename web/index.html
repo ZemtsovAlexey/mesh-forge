@@ -56,6 +56,12 @@
             <input type="file" id="photo-file" accept="image/*" hidden />
             <span>Загрузить фото</span>
           </label>
+          <label class="field">Модель
+            <select id="photo-backend">
+              <option value="hunyuan3d" selected>Hunyuan3D-2mini</option>
+              <option value="triposr">TripoSR</option>
+            </select>
+          </label>
           <label class="check"><input type="checkbox" id="photo-rmbg" checked /> Убрать фон</label>
           <label class="field">Solidify (мм)<input type="range" id="photo-solid" min="0" max="5" step="0.5" value="0" /><output id="photo-solid-val">0</output></label>
           <button class="btn primary block" id="btn-photo">Сгенерировать 3D</button>

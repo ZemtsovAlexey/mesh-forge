@@ -103,6 +103,7 @@ async def post_photo(
     image: UploadFile = File(...),
     remove_bg: bool = Form(True),
     solidify_mm: float = Form(0.0),
+    backend: str = Form(""),
 ) -> OperationResult:
     try:
         manifest = load_project(project_id)
@@ -118,11 +119,14 @@ async def post_photo(
                 path,
                 remove_bg=remove_bg,
                 solidify_mm=solidify_mm,
+                backend=backend or None,
             )
 
         return await run_in_threadpool(_do_photo)
     except RuntimeError as exc:
         raise HTTPException(500, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
 
 @router.post("/{project_id}/scan", response_model=OperationResult)

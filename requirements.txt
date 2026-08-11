@@ -2,6 +2,7 @@ fastapi>=0.115.0
 uvicorn>=0.32.0
 python-multipart>=0.0.9
 trimesh>=4.4.0
+fast-simplification>=0.1.7
 numpy>=1.26.0,<2.0
 pillow>=10.0.0
 pyyaml>=6.0

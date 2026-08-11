@@ -24,6 +24,14 @@ Given a user instruction and optional mesh stats, output ONLY valid JSON:
 }
 Allowed ops: scale_axis (x|y|z + value_mm), scale_uniform (factor), solidify (thickness_mm),
 decimate (target_faces), smooth (iterations), fill_holes, remesh_voxel (voxel_mm).
+
+Rules:
+- Prefer minimal ops. For "remove spikes / needles / fix edges" use smooth (1-3) then optional
+  decimate — do NOT remesh_voxel unless the user explicitly asks to remesh.
+- remesh_voxel is destructive on large scans (bbox > 200 mm). If you must remesh, set
+  voxel_mm to at least max(bbox)/150 (often 5–20 mm), never 0.5 mm on meter-scale parts.
+- fill_holes only on small meshes (< 100k faces) or when user asks to close holes.
+- Never invent dimensions; use mesh stats bbox when scaling.
 If you cannot map the request, return empty operations and explain in summary."""
 
 

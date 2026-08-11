@@ -1,0 +1,17 @@
+# Shape-only Hunyuan3D-2mini (no texgen / custom CUDA rasterizer)
+diffusers>=0.31.0
+einops>=0.7.0
+opencv-python-headless>=4.8.0
+numpy>=1.26.0,<2.0
+transformers>=4.48.0
+omegaconf>=2.3.0
+tqdm>=4.66.0
+trimesh>=4.0.5
+accelerate>=0.30.0
+rembg>=2.0.50
+onnxruntime>=1.17.0
+huggingface-hub>=0.23.0
+Pillow>=10.1.0
+safetensors>=0.4.0
+scikit-image>=0.22.0
+pyyaml>=6.0

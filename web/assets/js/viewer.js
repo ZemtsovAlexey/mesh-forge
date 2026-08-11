@@ -11,11 +11,12 @@ export class MeshViewer {
 
     this.scene = new THREE.Scene();
     this.scene.background = new THREE.Color(0x0a0c10);
-    this.scene.fog = new THREE.Fog(0x0a0c10, 8, 28);
+    // Fog distances are updated per-mesh in _fitCamera (photo meshes are ~100–200 mm)
+    this.scene.fog = new THREE.Fog(0x0a0c10, 200, 800);
 
     const w = container.clientWidth || 800;
     const h = container.clientHeight || 600;
-    this.camera = new THREE.PerspectiveCamera(45, w / h, 0.01, 200);
+    this.camera = new THREE.PerspectiveCamera(45, w / h, 0.1, 5000);
     this.camera.position.set(2.2, 1.6, 2.2);
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
@@ -98,18 +99,55 @@ export class MeshViewer {
     }
   }
 
+  _resizeHelpers(maxDim) {
+    const gridSize = Math.max(6, maxDim * 3);
+    const divisions = 24;
+
+    this.scene.remove(this.grid);
+    this.grid.geometry?.dispose?.();
+    this.grid.material?.dispose?.();
+    this.grid = new THREE.GridHelper(gridSize, divisions, 0x2a3142, 0x1a1f2a);
+    this.grid.visible = this.showGrid;
+    this.scene.add(this.grid);
+
+    this.ground.geometry?.dispose?.();
+    this.ground.geometry = new THREE.PlaneGeometry(gridSize * 1.2, gridSize * 1.2);
+    this.ground.visible = this.showGrid;
+
+    // Lights follow model scale
+    this.scene.traverse((obj) => {
+      if (obj.isDirectionalLight) {
+        const dir = obj.position.clone().normalize();
+        obj.position.copy(dir.multiplyScalar(maxDim * 4));
+      }
+    });
+  }
+
   _fitCamera(object) {
+    // World-space box before we re-center the object
+    object.updateMatrixWorld(true);
     const box = new THREE.Box3().setFromObject(object);
     const size = box.getSize(new THREE.Vector3());
     const center = box.getCenter(new THREE.Vector3());
     const maxDim = Math.max(size.x, size.y, size.z, 0.001);
-    const dist = maxDim * 2.2;
 
     object.position.sub(center);
     object.position.y += size.y / 2;
 
+    const dist = maxDim * 2.2;
     this.controls.target.set(0, size.y * 0.45, 0);
-    this.camera.position.set(dist * 0.85, dist * 0.65, dist * 0.85);
+    this.camera.position.set(dist * 0.85, dist * 0.55, dist * 0.85);
+
+    this.camera.near = Math.max(maxDim / 1000, 0.01);
+    this.camera.far = Math.max(maxDim * 50, 500);
+    this.camera.updateProjectionMatrix();
+
+    if (this.scene.fog) {
+      this.scene.fog.near = maxDim * 4;
+      this.scene.fog.far = maxDim * 12;
+    }
+
+    this._resizeHelpers(maxDim);
     this.controls.update();
   }
 
@@ -126,7 +164,9 @@ export class MeshViewer {
 
   async loadUrl(url) {
     this.clear();
-    const ext = url.split("?")[0].split(".").pop()?.toLowerCase() || "stl";
+    const clean = url.split("?")[0];
+    // API serves STL without extension in path (/mesh) — default to STL
+    const ext = clean.includes(".") ? (clean.split(".").pop()?.toLowerCase() || "stl") : "stl";
 
     return new Promise((resolve, reject) => {
       const onLoaded = (object) => {

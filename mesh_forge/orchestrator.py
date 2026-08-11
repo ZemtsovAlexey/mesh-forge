@@ -111,11 +111,13 @@ class Orchestrator:
 
     def system_status(self) -> dict[str, Any]:
         from mesh_forge.backends.blender import blender_available
+        from mesh_forge.backends.hunyuan3d import hunyuan3d_available
         from mesh_forge.backends.openscad import openscad_available
         from mesh_forge.backends.triposr import triposr_available
 
         return {
             "lmstudio": self.llm.health_check(),
+            "hunyuan3d": hunyuan3d_available(),
             "triposr": triposr_available(),
             "blender": blender_available(),
             "openscad": openscad_available(),
