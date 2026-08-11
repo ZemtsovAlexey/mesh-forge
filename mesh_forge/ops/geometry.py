@@ -25,6 +25,33 @@ def save_mesh(mesh: trimesh.Trimesh, path: Path) -> Path:
     return path
 
 
+def orient_upright(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    """Rotate so the longest bbox axis becomes +Y (viewer up), then sit on ground."""
+    mesh = mesh.copy()
+    extents = np.asarray(mesh.extents, dtype=float)
+    long_axis = int(np.argmax(extents))
+    if long_axis != 1:
+        if long_axis == 0:  # X -> Y
+            matrix = trimesh.transformations.rotation_matrix(np.pi / 2, [0, 0, 1])
+        else:  # Z -> Y
+            matrix = trimesh.transformations.rotation_matrix(-np.pi / 2, [1, 0, 0])
+        mesh.apply_transform(matrix)
+
+    # Prefer taller half above centroid (avoid head-down)
+    if float(np.mean(mesh.vertices[:, 1] - mesh.centroid[1])) < 0:
+        mesh.apply_transform(trimesh.transformations.rotation_matrix(np.pi, [1, 0, 0]))
+
+    bounds = mesh.bounds
+    # Center XZ, put min Y on ground
+    shift = np.array([
+        -(bounds[0][0] + bounds[1][0]) / 2,
+        -bounds[0][1],
+        -(bounds[0][2] + bounds[1][2]) / 2,
+    ])
+    mesh.apply_translation(shift)
+    return mesh
+
+
 def scale_axis(mesh: trimesh.Trimesh, axis: str, value_mm: float) -> trimesh.Trimesh:
     axis_idx = {"x": 0, "y": 1, "z": 2}[axis.lower()]
     extents = mesh.extents.copy()

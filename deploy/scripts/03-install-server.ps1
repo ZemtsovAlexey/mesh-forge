@@ -1,5 +1,5 @@
 ﻿# Run on compute server (DESKTOP-HOME)
-# Installs: Git, Python, Blender, OpenSCAD, PyTorch, TripoSR, Python venv
+# Installs: Git, Python, Blender, OpenSCAD, Docker, MeshForge venv, TripoSR Docker image
 $ErrorActionPreference = "Continue"
 $AIRoot = "C:\AI"
 $MeshForgeRoot = Join-Path $AIRoot "mesh-forge"
@@ -25,6 +25,7 @@ Install-WingetPkg "Git.Git" "Git"
 Install-WingetPkg "Python.Python.3.11" "Python 3.11"
 Install-WingetPkg "BlenderFoundation.Blender" "Blender"
 Install-WingetPkg "OpenSCAD.OpenSCAD" "OpenSCAD"
+Install-WingetPkg "Docker.DockerDesktop" "Docker Desktop"
 
 $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" +
             [System.Environment]::GetEnvironmentVariable("Path","User")
@@ -39,18 +40,25 @@ if (-not (Test-Path (Join-Path $venv "Scripts\python.exe"))) { Log "Creating ven
 $pip = Join-Path $venv "Scripts\pip.exe"
 $python = Join-Path $venv "Scripts\python.exe"
 Log "Upgrading pip..."; & $pip install --upgrade pip wheel setuptools
-Log "Installing PyTorch CUDA..."; & $pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 
 $reqPath = Join-Path $PSScriptRoot "..\..\requirements-server.txt"
 if (-not (Test-Path $reqPath)) { $reqPath = Join-Path $AIRoot "mesh-forge-remote\requirements-server.txt" }
 if (Test-Path $reqPath) { Log "pip install -r requirements-server.txt"; & $pip install -r $reqPath }
-else { & $pip install gradio fastapi uvicorn trimesh numpy pillow pyyaml httpx openai rembg pymeshlab open3d einops onnxruntime }
+else { & $pip install fastapi uvicorn trimesh numpy pillow pyyaml httpx openai rembg pymeshlab open3d einops onnxruntime }
 
 if (-not (Test-Path (Join-Path $TripoRoot ".git"))) {
-    Log "Cloning TripoSR..."
+    Log "Cloning TripoSR (reference only; inference runs in Docker)..."
     git clone https://github.com/VAST-AI-Research/TripoSR.git $TripoRoot
 }
-if (Test-Path (Join-Path $TripoRoot "requirements.txt")) { & $pip install -r (Join-Path $TripoRoot "requirements.txt") }
+
+$buildScript = Join-Path $MeshForgeRoot "docker\triposr\build.ps1"
+if ((Get-Command docker -ErrorAction SilentlyContinue) -and (Test-Path $buildScript)) {
+    Log "Building TripoSR Docker image (first run may take 10-20 min)..."
+    & $buildScript
+    if ($LASTEXITCODE -ne 0) { Log "WARN: Docker image build failed - run docker\triposr\build.ps1 manually" }
+} else {
+    Log "WARN: Docker not available yet - build meshforge/triposr after Docker Desktop starts"
+}
 
 $blender = Get-ChildItem "C:\Program Files\Blender Foundation" -Recurse -Filter "blender.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
 $openscad = Get-ChildItem "C:\Program Files\OpenSCAD","C:\Program Files (x86)\OpenSCAD" -Filter "openscad.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -58,6 +66,7 @@ $b = if ($blender) { $blender.FullName.Replace('\','/') } else { "" }
 $o = if ($openscad) { $openscad.FullName.Replace('\','/') } else { "" }
 $t = $TripoRoot.Replace('\','/')
 $p = (Join-Path $MeshForgeRoot "projects").Replace('\','/')
+$h = (Join-Path $MeshForgeRoot ".cache\huggingface").Replace('\','/')
 
 @"
 llm:
@@ -77,6 +86,10 @@ server:
 gpu:
   vram_gb: 8
   sequential_models: true
+docker:
+  enabled: true
+  triposr_image: meshforge/triposr:latest
+  hf_cache: "$h"
 "@ | Set-Content (Join-Path $MeshForgeRoot "config.yaml") -Encoding UTF8
 
 try { nvidia-smi 2>&1 | ForEach-Object { Log $_ } } catch { Log "nvidia-smi not found" }

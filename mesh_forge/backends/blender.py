@@ -1,10 +1,14 @@
 ﻿from __future__ import annotations
 
+import logging
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 
 from mesh_forge.config import load_config
+
+logger = logging.getLogger("mesh_forge.blender")
 
 BLENDER_REPAIR_SCRIPT = """
 import bpy
@@ -14,7 +18,7 @@ argv = argv[argv.index("--") + 1:]
 inp, outp, thickness = argv[0], argv[1], float(argv[2])
 bpy.ops.wm.read_factory_settings(use_empty=True)
 if inp.lower().endswith(".stl"):
-    bpy.ops.import_mesh.stl(filepath=inp)
+    bpy.ops.wm.stl_import(filepath=inp)
 else:
     bpy.ops.wm.obj_import(filepath=inp)
 obj = bpy.context.selected_objects[0]
@@ -26,7 +30,7 @@ bpy.ops.object.mode_set(mode="OBJECT")
 mod = obj.modifiers.new(name="Solidify", type="SOLIDIFY")
 mod.thickness = thickness
 bpy.ops.object.modifier_apply(modifier=mod.name)
-bpy.ops.export_mesh.stl(filepath=outp, use_selection=True)
+bpy.ops.wm.stl_export(filepath=outp, export_selected_objects=True)
 """
 
 
@@ -45,15 +49,37 @@ def run_blender_script(script: str, extra_args: list[str] | None = None) -> None
     cmd = [str(blender), "--background", "--python", script_path]
     if extra_args:
         cmd.extend(["--", *extra_args])
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    logger.info("Blender run args=%s", extra_args)
+    started = time.perf_counter()
+    result = subprocess.run(
+        cmd, capture_output=True, text=True, timeout=600, encoding="utf-8", errors="replace",
+    )
+    elapsed = time.perf_counter() - started
     Path(script_path).unlink(missing_ok=True)
     if result.returncode != 0:
-        raise RuntimeError(f"Blender failed:\n{result.stderr[-2000:]}")
+        logger.error(
+            "Blender failed rc=%s after %.1fs\nstderr:\n%s\nstdout:\n%s",
+            result.returncode,
+            elapsed,
+            result.stderr[-3000:],
+            result.stdout[-1500:],
+        )
+        raise RuntimeError(f"Blender failed:\n{result.stderr[-2000:]}\n{result.stdout[-1000:]}")
+    logger.info("Blender done in %.1fs", elapsed)
+    if result.stderr.strip():
+        logger.debug("Blender stderr tail:\n%s", result.stderr[-1000:])
 
 
 def repair_and_export(inp: Path, out: Path, solidify_mm: float = 0.0) -> Path:
+    if not inp.is_file():
+        raise FileNotFoundError(f"Blender input mesh not found: {inp}")
+    out.parent.mkdir(parents=True, exist_ok=True)
     thickness = solidify_mm if solidify_mm > 0 else 0.001
+    logger.info("Blender repair %s -> %s solidify=%.3f", inp, out, thickness)
     run_blender_script(BLENDER_REPAIR_SCRIPT, [str(inp), str(out), str(thickness)])
+    if not out.is_file():
+        raise RuntimeError(f"Blender did not create output: {out}")
+    logger.info("Blender output %s (%d bytes)", out, out.stat().st_size)
     return out
 
 

@@ -22,8 +22,10 @@ copy deploy\deploy.config.example.json deploy\deploy.config.json
 ```powershell
 copy config.yaml.example config.yaml
 # заполните paths: blender, openscad, triposr
-C:\AI\mesh-forge\venv\Scripts\python.exe app.py
+C:\AI\mesh-forge\venv\Scripts\python.exe server.py
 ```
+
+Старый Gradio UI (deprecated): `python app.py`
 
 **С Z13 — деплой кода на сервер:**
 ```powershell
@@ -36,5 +38,5 @@ UI: http://192.168.0.22:7860
 
 - ✅ SSH: `zemet@192.168.0.22`
 - ✅ Серверный стек (PyTorch CUDA, TripoSR, Blender, OpenSCAD)
-- ✅ MeshForge app + Gradio UI
+- ✅ MeshForge API + веб-UI (FastAPI, Three.js 3D viewer)
 - ⏳ LM Studio + модели (вручную на сервере)

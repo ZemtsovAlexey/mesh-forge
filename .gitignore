@@ -5,6 +5,13 @@ config.yaml
 ui-stdout.log
 ui-stderr.log
 .deploy.zip
+venv-triposr/
+.cache/
+docker/buildx/
+docker-build.*
+v3-run.*
+v4-run.*
+.stdin-test.py
 
 # Python (GitHub template)
 __pycache__/

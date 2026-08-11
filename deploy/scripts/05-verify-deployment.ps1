@@ -15,7 +15,10 @@ $script = @"
 `$ok = @()
 if (Test-Path C:\AI\mesh-forge\config.yaml) { `$ok += 'config' }
 if (Test-Path C:\AI\mesh-forge\venv\Scripts\python.exe) { `$ok += 'venv' }
-if (Test-Path C:\AI\TripoSR\run.py) { `$ok += 'triposr' }
+try {
+  `$img = docker image inspect meshforge/triposr:latest 2>`$null
+  if (`$LASTEXITCODE -eq 0) { `$ok += 'triposr-docker' } else { `$ok += 'triposr-docker:missing' }
+} catch { `$ok += 'triposr-docker:fail' }
 try { `$r = & C:\AI\mesh-forge\venv\Scripts\python.exe -c 'import torch; print(torch.cuda.is_available())'; `$ok += "cuda:`$r" } catch { `$ok += 'cuda:fail' }
 `$ok -join ','
 "@

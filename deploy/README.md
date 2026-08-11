@@ -114,11 +114,15 @@ ssh zemet@192.168.0.22 "powershell -Command Get-Content C:\AI\install-meshforge.
 |-----------|------|
 | Python venv | `C:\AI\mesh-forge\venv` |
 | config.yaml | `C:\AI\mesh-forge\config.yaml` |
-| TripoSR | `C:\AI\TripoSR` |
+| TripoSR Docker | `meshforge/triposr:latest` |
+| HF cache | `C:\AI\mesh-forge\.cache\huggingface` |
+| TripoSR (ref) | `C:\AI\TripoSR` |
 | Проекты | `C:\AI\mesh-forge\projects` |
 | Лог установки | `C:\AI\install-meshforge.log` |
 
-Пакеты: Git, Python 3.11, Blender, OpenSCAD, PyTorch (CUDA), trimesh, pymeshlab, open3d, rembg, gradio.
+Пакеты: Git, Python 3.11, Blender, OpenSCAD, Docker Desktop, FastAPI, trimesh, pymeshlab, open3d, rembg.
+
+TripoSR запускается в Docker (`docker.enabled: true`). Сборка образа: `.\docker\triposr\build.ps1`.
 
 ---
 

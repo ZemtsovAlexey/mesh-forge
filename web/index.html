@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MeshForge</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/assets/css/style.css" />
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="brand">
+        <span class="brand-mark"></span>
+        <div>
+          <h1>MeshForge</h1>
+          <p>Фото · скан · текст → STL</p>
+        </div>
+      </div>
+      <div class="status-pills" id="status-pills"></div>
+    </header>
+
+    <aside class="sidebar sidebar-left">
+      <section class="panel">
+        <div class="panel-head">
+          <h2>Проекты</h2>
+          <button class="icon-btn" id="btn-refresh-projects" title="Обновить">↻</button>
+        </div>
+        <div class="new-project">
+          <input id="new-project-name" type="text" placeholder="Новый проект…" />
+          <button id="btn-create-project" class="btn primary">+</button>
+        </div>
+        <ul class="project-list" id="project-list"></ul>
+      </section>
+
+      <section class="panel">
+        <div class="tabs" role="tablist">
+          <button class="tab active" data-tab="photo">Фото</button>
+          <button class="tab" data-tab="scan">Скан</button>
+          <button class="tab" data-tab="text">Текст</button>
+          <button class="tab" data-tab="edit">Правка</button>
+        </div>
+
+        <div class="tab-panel active" id="tab-photo">
+          <label class="file-drop" id="photo-drop">
+            <input type="file" id="photo-file" accept="image/*" hidden />
+            <span>Загрузить фото</span>
+          </label>
+          <label class="check"><input type="checkbox" id="photo-rmbg" checked /> Убрать фон</label>
+          <label class="field">Solidify (мм)<input type="range" id="photo-solid" min="0" max="5" step="0.5" value="0" /><output id="photo-solid-val">0</output></label>
+          <button class="btn primary block" id="btn-photo">Сгенерировать 3D</button>
+        </div>
+
+        <div class="tab-panel" id="tab-scan">
+          <label class="file-drop">
+            <input type="file" id="scan-file" accept=".stl,.obj" hidden />
+            <span>STL / OBJ</span>
+          </label>
+          <label class="field">Режим
+            <select id="scan-mode"><option value="light">Light</option><option value="rebuild">Rebuild</option></select>
+          </label>
+          <label class="field">Smooth<input type="range" id="scan-smooth" min="0" max="5" step="1" value="1" /><output id="scan-smooth-val">1</output></label>
+          <label class="field">Solidify (мм)<input type="range" id="scan-solid" min="0" max="5" step="0.5" value="0" /><output id="scan-solid-val">0</output></label>
+          <button class="btn primary block" id="btn-scan">Очистить скан</button>
+        </div>
+
+        <div class="tab-panel" id="tab-text">
+          <label class="field">Описание<textarea id="text-prompt" rows="4" placeholder="Коробка 80×50×30 мм, отверстие 6 мм"></textarea></label>
+          <label class="field">Режим
+            <select id="text-mode"><option value="mechanical">Mechanical</option><option value="organic">Organic</option></select>
+          </label>
+          <button class="btn primary block" id="btn-text">Сгенерировать</button>
+        </div>
+
+        <div class="tab-panel" id="tab-edit">
+          <label class="field">Инструкция<textarea id="edit-instr" rows="3" placeholder="Высота 100 мм, толще основание"></textarea></label>
+          <label class="file-drop small">
+            <input type="file" id="edit-ref" accept="image/*" hidden />
+            <span>Референс (опц.)</span>
+          </label>
+          <label class="field">Solidify (мм)<input type="range" id="edit-solid" min="0" max="5" step="0.5" value="0" /><output id="edit-solid-val">0</output></label>
+          <div class="btn-row">
+            <button class="btn" id="btn-edit-text">Текст</button>
+            <button class="btn" id="btn-edit-photo">Фото</button>
+          </div>
+        </div>
+      </section>
+    </aside>
+
+    <main class="viewport-wrap">
+      <div id="viewer-canvas"></div>
+      <div class="viewport-overlay" id="viewer-empty">
+        <div class="empty-state">
+          <div class="empty-icon">◇</div>
+          <p>Выберите проект или создайте модель</p>
+        </div>
+      </div>
+      <div class="viewport-toolbar">
+        <button class="tool-btn active" id="btn-shade" title="Solid">◆</button>
+        <button class="tool-btn" id="btn-wire" title="Wireframe">▦</button>
+        <button class="tool-btn" id="btn-grid" title="Сетка">#</button>
+        <button class="tool-btn" id="btn-reset-cam" title="Сброс камеры">◎</button>
+      </div>
+      <div class="loading-overlay hidden" id="loading">
+        <div class="spinner"></div>
+        <p id="loading-text">Обработка…</p>
+        <div class="progress-wrap">
+          <div class="progress-bar" id="progress-bar"></div>
+        </div>
+        <p class="progress-meta" id="progress-meta">0%</p>
+      </div>
+    </main>
+
+    <aside class="sidebar sidebar-right">
+      <section class="panel">
+        <h2>Модель</h2>
+        <div class="meta" id="project-meta">
+          <p class="muted">Проект не выбран</p>
+        </div>
+        <a class="btn block hidden" id="btn-download" download>Скачать STL</a>
+      </section>
+
+      <section class="panel flex-grow">
+        <h2>QC</h2>
+        <pre class="log" id="qc-log">—</pre>
+      </section>
+
+      <section class="panel">
+        <h2>История</h2>
+        <ul class="history" id="history-list"></ul>
+      </section>
+
+      <section class="panel collapsible">
+        <button class="panel-toggle" id="toggle-settings">⚙ LLM</button>
+        <div class="settings-body hidden" id="settings-body">
+          <label class="field">API URL<input id="llm-url" type="text" /></label>
+          <label class="field">API key<input id="llm-key" type="text" /></label>
+          <button class="btn block" id="btn-llm-refresh">Обновить модели</button>
+          <label class="field">Planner<select id="llm-planner"></select></label>
+          <label class="field">Vision<select id="llm-vision"></select></label>
+          <button class="btn primary block" id="btn-llm-save">Сохранить</button>
+          <pre class="log small" id="llm-status"></pre>
+        </div>
+      </section>
+    </aside>
+
+    <footer class="toast hidden" id="toast"></footer>
+  </div>
+
+  <script type="module" src="/assets/js/viewer.js"></script>
+  <script type="module" src="/assets/js/app.js"></script>
+</body>
+</html>

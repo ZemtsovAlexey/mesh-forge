@@ -1,20 +1,21 @@
 llm:
   provider: lmstudio
-  base_url: "http://127.0.0.1:1234/v1"
-  api_key: "lm-studio"
-  planner_model: "qwen2.5-7b-instruct"
-  vision_model: "qwen2.5-vl-7b-instruct"
-
+  base_url: http://127.0.0.1:1234/v1
+  api_key: lm-studio
+  planner_model: qwen2.5-7b-instruct
+  vision_model: qwen2.5-vl-7b-instruct
 paths:
-  blender: ""
-  openscad: ""
-  triposr: ""
-  projects: "projects"
-
+  blender: C:/Program Files/Blender Foundation/Blender 4.5/blender.exe
+  openscad: C:/Program Files/OpenSCAD/openscad.exe
+  triposr: C:/AI/TripoSR
+  projects: C:/AI/mesh-forge/projects
 server:
-  host: "0.0.0.0"
+  host: 0.0.0.0
   port: 7860
-
 gpu:
   vram_gb: 8
   sequential_models: true
+docker:
+  enabled: true
+  triposr_image: meshforge/triposr:latest
+  hf_cache: C:/AI/mesh-forge/.cache/huggingface

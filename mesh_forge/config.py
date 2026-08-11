@@ -52,16 +52,29 @@ class GPUConfig:
 
 
 @dataclass
+class DockerConfig:
+    enabled: bool = True
+    triposr_image: str = "meshforge/triposr:latest"
+    hf_cache: str = ""
+
+
+@dataclass
 class AppConfig:
     llm: LLMConfig = field(default_factory=LLMConfig)
     paths: PathsConfig = field(default_factory=PathsConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     gpu: GPUConfig = field(default_factory=GPUConfig)
+    docker: DockerConfig = field(default_factory=DockerConfig)
     config_path: Path = field(default_factory=_find_config)
 
     @property
     def projects_dir(self) -> Path:
         raw = self.paths.projects or str(ROOT / "projects")
+        return Path(raw)
+
+    @property
+    def hf_cache_dir(self) -> Path:
+        raw = self.docker.hf_cache or str(ROOT / ".cache" / "huggingface")
         return Path(raw)
 
     def resolve(self, key: str) -> Path | None:
@@ -84,6 +97,7 @@ def load_config(path: Path | None = None) -> AppConfig:
         paths=PathsConfig(**(data.get("paths") or {})),
         server=ServerConfig(**(data.get("server") or {})),
         gpu=GPUConfig(**(data.get("gpu") or {})),
+        docker=DockerConfig(**(data.get("docker") or {})),
         config_path=cfg_path,
     )
 
@@ -122,6 +136,11 @@ def save_config(config: AppConfig) -> Path:
     data["gpu"] = {
         "vram_gb": config.gpu.vram_gb,
         "sequential_models": config.gpu.sequential_models,
+    }
+    data["docker"] = {
+        "enabled": config.docker.enabled,
+        "triposr_image": config.docker.triposr_image,
+        "hf_cache": config.docker.hf_cache or str(config.hf_cache_dir),
     }
 
     cfg_path.parent.mkdir(parents=True, exist_ok=True)

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -12,6 +13,8 @@ from mesh_forge.pipeline.photo import create_from_photo
 from mesh_forge.pipeline.scan import create_from_scan
 from mesh_forge.pipeline.text import create_from_text
 from mesh_forge.render import render_mesh_preview
+
+logger = logging.getLogger("mesh_forge.orchestrator")
 
 
 class Orchestrator:
@@ -28,7 +31,9 @@ class Orchestrator:
         self, manifest: ProjectManifest, image_path: Path, **kwargs: Any
     ) -> tuple[ProjectManifest, str]:
         work = manifest.root / "work" / f"v{manifest.current_version + 1}_photo"
-        mesh = create_from_photo(image_path, work, **kwargs)
+        logger.info("create_photo project=%s image=%s work=%s kwargs=%s", manifest.id, image_path, work, kwargs)
+        mesh = create_from_photo(image_path, work, project_id=manifest.id, **kwargs)
+        logger.info("create_photo project=%s mesh=%s", manifest.id, mesh)
         add_version(manifest, mesh, branch="photo", action="create")
         return manifest, "Photo → 3D complete"
 
@@ -36,7 +41,9 @@ class Orchestrator:
         self, manifest: ProjectManifest, scan_path: Path, **kwargs: Any
     ) -> tuple[ProjectManifest, str]:
         work = manifest.root / "work" / f"v{manifest.current_version + 1}_scan"
+        logger.info("create_scan project=%s scan=%s work=%s kwargs=%s", manifest.id, scan_path, work, kwargs)
         mesh = create_from_scan(scan_path, work, **kwargs)
+        logger.info("create_scan project=%s mesh=%s", manifest.id, mesh)
         add_version(manifest, mesh, branch="scan", action="create")
         return manifest, "Scan cleanup complete"
 
@@ -44,7 +51,9 @@ class Orchestrator:
         self, manifest: ProjectManifest, prompt: str, **kwargs: Any
     ) -> tuple[ProjectManifest, str]:
         work = manifest.root / "work" / f"v{manifest.current_version + 1}_text"
+        logger.info("create_text project=%s work=%s kwargs=%s", manifest.id, work, kwargs)
         mesh, notes = create_from_text(prompt, work, **kwargs)
+        logger.info("create_text project=%s mesh=%s", manifest.id, mesh)
         add_version(manifest, mesh, branch="text", action="create", instruction=prompt)
         return manifest, notes or "Text → 3D complete"
 
