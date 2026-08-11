@@ -14,17 +14,26 @@ from mesh_forge import progress as prog
 
 logger = logging.getLogger("mesh_forge.hunyuan3d")
 
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+
 _STAGE_RULES: list[tuple[re.Pattern[str], float, str]] = [
     (re.compile(r"STAGE:\s*loading_model", re.I), 22, "Загрузка Hunyuan3D-2mini…"),
+    (re.compile(r"STAGE:\s*weights_cached", re.I), 28, "Веса уже в кэше…"),
+    (re.compile(r"STAGE:\s*weights_linked|STAGE:\s*weights_copied", re.I), 30, "Подготовка локальных весов…"),
+    (re.compile(r"STAGE:\s*resolve_weights", re.I), 26, "Проверка весов Hugging Face…"),
     (re.compile(r"STAGE:\s*model_ready", re.I), 38, "Модель загружена"),
     (re.compile(r"STAGE:\s*load_image", re.I), 42, "Чтение изображения…"),
     (re.compile(r"STAGE:\s*rembg\b", re.I), 46, "Удаление фона…"),
     (re.compile(r"STAGE:\s*rembg_done", re.I), 52, "Фон убран"),
+    (re.compile(r"STAGE:\s*resize\b", re.I), 44, "Уменьшение изображения…"),
     (re.compile(r"STAGE:\s*inference\b", re.I), 58, "Инференс Hunyuan…"),
+    (re.compile(r"STAGE:\s*set_flashvdm", re.I), 60, "Переключение декодера…"),
+    (re.compile(r"STAGE:\s*inference_ok", re.I), 76, "Меш получен"),
     (re.compile(r"STAGE:\s*inference_done", re.I), 78, "Инференс завершён"),
     (re.compile(r"STAGE:\s*export\b", re.I), 82, "Экспорт OBJ…"),
     (re.compile(r"STAGE:\s*export_done", re.I), 86, "Экспорт готов"),
-    (re.compile(r"try to download from huggingface", re.I), 24, "Скачивание весов с Hugging Face…"),
+    (re.compile(r"try to download from huggingface", re.I), 24, "Проверка весов Hugging Face…"),
+    (re.compile(r"Downloading data from .*u2net", re.I), 48, "Скачивание модели rembg (один раз)…"),
 ]
 _TQDM_PCT = re.compile(r"(\d{1,3})%\|")
 _FETCHING = re.compile(r"Fetching\s+(\d+)\s+files", re.I)
@@ -78,7 +87,7 @@ def _parse_progress(line: str, project_id: str) -> None:
     text = line.strip()
     if not text:
         return
-    # HF "Fetching N files: 0%" stays at 0 until each file finishes — avoid fake 0%
+    # HF hub "Fetching N files" often means cache resolve (instant 100%), not a real download
     m_fetch = _FETCHING.search(text)
     if m_fetch:
         m_pct = re.search(r"(\d{1,3})%", text)
@@ -90,11 +99,14 @@ def _parse_progress(line: str, project_id: str) -> None:
             mapped = 24 + 12 * min(1.0, cur / max(tot, 1e-6))
             prog.update(project_id, mapped, f"Скачивание модели… {cur:.1f}/{tot:.1f} {unit}")
             return
+        if done >= 100 or "it/s" in text:
+            prog.update(project_id, 30, "Веса из кэша Hugging Face…")
+            return
         mapped = 24 + 12 * (done / 100.0)
         label = (
-            f"Скачивание весов Hugging Face… {done}% ({total} файлов)"
+            f"Проверка весов Hugging Face… {done}% ({total} файлов)"
             if done > 0
-            else f"Скачивание весов Hugging Face… ({total} файлов, это может занять несколько минут)"
+            else f"Проверка / скачивание весов… ({total} файлов)"
         )
         prog.update(project_id, mapped if done > 0 else 25, label)
         return
@@ -218,7 +230,11 @@ def run_hunyuan3d(
     staged = _stage_input_image(image_path, work_dir)
     hf_cache = cfg.hf_cache_dir
     hf_cache.mkdir(parents=True, exist_ok=True)
-    (hf_cache.parent / "hy3dgen").mkdir(parents=True, exist_ok=True)
+    hy3d_cache = hf_cache.parent / "hy3dgen"
+    u2net_cache = hf_cache.parent / "u2net"
+    hy3d_cache.mkdir(parents=True, exist_ok=True)
+    u2net_cache.mkdir(parents=True, exist_ok=True)
+    infer_py = _PROJECT_ROOT / "docker" / "hunyuan3d" / "infer.py"
 
     cmd = [
         "docker",
@@ -233,18 +249,29 @@ def run_hunyuan3d(
         "HF_HUB_DISABLE_XET=1",
         "-e",
         "HY3DGEN_MODELS=/root/.cache/hy3dgen",
+        "-e",
+        "U2NET_HOME=/root/.u2net",
         "-v",
         f"{_docker_path(work_dir)}:/work",
         "-v",
         f"{_docker_path(hf_cache)}:/root/.cache/huggingface",
         "-v",
-        f"{_docker_path(hf_cache.parent / 'hy3dgen')}:/root/.cache/hy3dgen",
-        image,
-        f"/work/{staged.name}",
-        "--output-dir",
-        f"/work/{output_dir.name}",
-        *_infer_args(remove_bg=remove_bg),
+        f"{_docker_path(hy3d_cache)}:/root/.cache/hy3dgen",
+        "-v",
+        f"{_docker_path(u2net_cache)}:/root/.u2net",
     ]
+    # Always use repo infer.py so cache/rembg fixes apply without image rebuild
+    if infer_py.is_file():
+        cmd.extend(["-v", f"{_docker_path(infer_py)}:/opt/hunyuan/infer.py:ro"])
+    cmd.extend(
+        [
+            image,
+            f"/work/{staged.name}",
+            "--output-dir",
+            f"/work/{output_dir.name}",
+            *_infer_args(remove_bg=remove_bg),
+        ]
+    )
     if project_id:
         prog.update(project_id, 18, "Docker Hunyuan3D…")
     logger.info(
