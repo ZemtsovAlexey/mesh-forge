@@ -16,6 +16,9 @@ gpu:
 comfyui:
   enabled: true
   base_url: http://127.0.0.1:8188
+  # Empty = auto-detect (ComfyUI Desktop user data, else portable).
+  # Desktop example: C:/Users/<you>/Documents/ComfyUI
+  # Portable example: C:/Users/<you>/AppData/Local/MeshForge/ComfyUI_windows_portable/ComfyUI
   install_dir: ""
   workflow: ""
   text_to_multiview_workflow: ""

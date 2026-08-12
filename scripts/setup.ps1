@@ -115,9 +115,8 @@ if (-not $SkipComfyUI) {
     & (Join-Path $PSScriptRoot "setup-comfyui.ps1") -Gpu $Gpu -SkipCheckpoints:$SkipCheckpoints
 }
 
-$comfyRoot = Read-ComfyInstallDir -ProjectRoot $root -Fallback (Get-DefaultComfyRoot)
-$layout = Resolve-ComfyLayout -InstallDir $comfyRoot
-$resolvedComfy = if (Test-Path $layout.MainPy) { $layout.ComfyRoot } else { $comfyRoot }
+$layout = Find-ComfyLayout -ProjectRoot $root
+$resolvedComfy = if (Test-ComfyLayoutReady $layout) { $layout.InstallDir } else { "" }
 $gpuVram = Get-GpuMemoryHintGb
 Write-Host "Refreshing local config..." -ForegroundColor Yellow
 Update-LocalConfig -UvExe $uvExe -ProjectRoot $root -ComfyRoot $resolvedComfy -GpuVramGb $gpuVram

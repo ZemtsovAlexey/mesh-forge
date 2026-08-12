@@ -377,8 +377,51 @@ def apply_quality_preset(config: AppConfig, preset: str) -> AppConfig:
     return config
 
 
+def _comfyui_checkpoint_folders_from_api(base_url: str) -> list[Path]:
+    """Ask a running ComfyUI for checkpoint folders via /experiment/models."""
+    import httpx
+
+    base = (base_url or "").rstrip("/")
+    if not base:
+        return []
+    for path in ("/experiment/models", "/api/experiment/models"):
+        try:
+            with httpx.Client(timeout=3.0) as client:
+                response = client.get(f"{base}{path}")
+            if response.status_code != 200:
+                continue
+            payload = response.json()
+            if not isinstance(payload, list):
+                continue
+            folders: list[Path] = []
+            for entry in payload:
+                if not isinstance(entry, dict) or entry.get("name") != "checkpoints":
+                    continue
+                raw_folders = entry.get("folders") or []
+                if not isinstance(raw_folders, list):
+                    continue
+                for folder in raw_folders:
+                    text = str(folder or "").strip()
+                    if text:
+                        folders.append(Path(text))
+            if folders:
+                return folders
+        except Exception:
+            continue
+    return []
+
+
 def comfyui_checkpoints_dir(config: AppConfig | None = None) -> Path | None:
+    """Resolve checkpoints dir: live ComfyUI API first, then install_dir layout."""
     cfg = config or load_config()
+
+    api_folders = _comfyui_checkpoint_folders_from_api(cfg.comfyui.base_url)
+    for folder in api_folders:
+        if folder.is_dir():
+            return folder
+    if api_folders:
+        return api_folders[0]
+
     install = (cfg.comfyui.install_dir or "").strip()
     if not install:
         return None
@@ -426,7 +469,8 @@ def download_comfyui_checkpoints(
     if ckpt_dir is None:
         raise RuntimeError(
             "comfyui.install_dir is not set — cannot download checkpoints. "
-            "Set it in config.yaml (e.g. C:/AI/ComfyUI_windows_portable/ComfyUI)."
+            "Set it in config.yaml (Desktop: Documents/ComfyUI; portable: .../ComfyUI) "
+            "or run scripts/setup-comfyui.ps1."
         )
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 

@@ -24,10 +24,9 @@ if (Test-ComfyHealth) {
     exit 0
 }
 
-$installDir = if ($InstallDir) { $InstallDir } else { Read-ComfyInstallDir -ProjectRoot $root }
-$layout = Resolve-ComfyLayout -InstallDir $installDir
-if (-not $layout.Python -or -not (Test-Path $layout.MainPy)) {
-    throw "ComfyUI is not installed at $installDir. Run .\scripts\setup-comfyui.ps1 first."
+$layout = Find-ComfyLayout -ProjectRoot $root -InstallDir $InstallDir
+if (-not (Test-ComfyLayoutReady $layout)) {
+    throw "ComfyUI is not installed / not detectable. Run .\scripts\setup-comfyui.ps1 or install ComfyUI Desktop."
 }
 
 New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
@@ -41,12 +40,29 @@ if (Test-Path $pidFile) {
 }
 
 Write-Host "Starting ComfyUI ($($layout.Kind)) from $($layout.ComfyRoot) ..." -ForegroundColor Cyan
+if ($layout.Kind -eq "desktop") {
+    Write-Host "Base directory: $($layout.BaseDirectory)" -ForegroundColor Cyan
+}
+
 $outLog = Join-Path $stateDir "comfyui.out.log"
 $errLog = Join-Path $stateDir "comfyui.err.log"
-$args = @(".\main.py", "--listen", $ListenHost, "--port", "$Port")
+
+$args = @("-s", ".\main.py", "--listen", $ListenHost, "--port", "$Port", "--disable-auto-launch")
 if ($layout.Kind -eq "portable") {
     $args += "--windows-standalone-build"
 }
+if ($layout.Kind -eq "desktop") {
+    if ($layout.BaseDirectory) {
+        $args += @("--base-directory", $layout.BaseDirectory)
+    }
+    if ($layout.ExtraModelPathsConfig -and (Test-Path $layout.ExtraModelPathsConfig)) {
+        $args += @("--extra-model-paths-config", $layout.ExtraModelPathsConfig)
+    }
+    if ($layout.FrontEndRoot -and (Test-Path $layout.FrontEndRoot)) {
+        $args += @("--front-end-root", $layout.FrontEndRoot)
+    }
+}
+
 $proc = Start-Process `
     -FilePath $layout.Python `
     -ArgumentList $args `

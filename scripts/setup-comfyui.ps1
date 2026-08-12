@@ -6,6 +6,7 @@ param(
     [string]$Gpu = "auto",
     [switch]$SkipCheckpoints,
     [switch]$QualityModels,
+    [switch]$ForcePortable,
     [switch]$ForceReinstall,
     [switch]$KeepArchive
 )
@@ -14,94 +15,123 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot "comfyui-common.ps1")
 
-$defaultComfy = Get-DefaultComfyRoot
-$comfyRoot = if ($InstallDir) { $InstallDir } else { Read-ComfyInstallDir -ProjectRoot $root -Fallback $defaultComfy }
-if (-not $PortableRoot) {
-    $PortableRoot = Get-PortableRootFromComfyRoot -ComfyRoot $comfyRoot
-}
-# If config still points at legacy git clone path, prefer portable default.
-if ((Split-Path $comfyRoot -Leaf) -ieq "ComfyUI" -and (Test-Path (Join-Path $comfyRoot "venv")) -and -not (Test-Path (Join-Path (Split-Path $comfyRoot -Parent) "python_embeded"))) {
-    if (-not $InstallDir) {
-        Write-Host "Legacy git/venv ComfyUI detected at $comfyRoot; installing portable beside it." -ForegroundColor Yellow
-        $PortableRoot = "C:\AI\ComfyUI_windows_portable"
-        $comfyRoot = Join-Path $PortableRoot "ComfyUI"
-    }
-}
-
-$download = if ($DownloadUrl) {
-    [pscustomobject]@{
-        Gpu = $Gpu
-        ArchiveName = (Split-Path $DownloadUrl -Leaf)
-        Url = $DownloadUrl
-    }
-} else {
-    Get-ComfyPortableDownloadInfo -Gpu $Gpu
-}
-
-$archivePath = Join-Path $env:TEMP $download.ArchiveName
+$layout = Find-ComfyLayout -ProjectRoot $root -InstallDir $InstallDir
 $legacyDir = "C:\AI\ComfyUI"
 
-Write-Host "== ComfyUI portable setup ==" -ForegroundColor Cyan
-Write-Host "GPU build:     $($download.Gpu)"
-Write-Host "Portable root: $PortableRoot"
-Write-Host "ComfyUI dir:   $comfyRoot"
-
-if ($ForceReinstall -and (Test-Path $PortableRoot)) {
-    throw "Refusing ForceReinstall without manual cleanup. Delete $PortableRoot first if you really want a clean install."
+if ($ForcePortable) {
+    $layout = $null
 }
 
-$layout = Resolve-ComfyLayout -InstallDir $comfyRoot
-$needsInstall = -not ((Test-Path $layout.MainPy) -and $layout.Kind -eq "portable")
-
-if ($needsInstall) {
-    if (-not (Test-Path $archivePath)) {
-        Write-Host "Downloading portable ComfyUI (large, ~2GB)..." -ForegroundColor Yellow
-        curl.exe -L --fail --retry 3 --output $archivePath $download.Url
-        if (-not $?) { throw "Failed to download $($download.Url)" }
-    } else {
-        Write-Host "Using existing archive: $archivePath" -ForegroundColor Cyan
-    }
-
-    $sevenZip = Ensure-7Zip
-    $extractParent = Split-Path $PortableRoot -Parent
-    if (-not (Test-Path $extractParent)) {
-        New-Item -ItemType Directory -Force -Path $extractParent | Out-Null
-    }
-
-    $stage = Join-Path $env:TEMP ("ComfyUI_portable_extract_" + [guid]::NewGuid().ToString("n"))
-    New-Item -ItemType Directory -Force -Path $stage | Out-Null
-    Write-Host "Extracting with $sevenZip ..." -ForegroundColor Yellow
-    & $sevenZip x $archivePath "-o$stage" -y
-    if ($LASTEXITCODE -ne 0) { throw "7-Zip extract failed with code $LASTEXITCODE" }
-
-    $extracted = Get-ChildItem $stage -Directory | Select-Object -First 1
-    if (-not $extracted) { throw "Extracted archive did not contain a top-level folder." }
-
-    if (Test-Path $PortableRoot) {
-        throw "Target already exists: $PortableRoot. Delete it or pass an empty PortableRoot."
-    }
-    Move-Item -LiteralPath $extracted.FullName -Destination $PortableRoot
-    Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
-
-    if (-not $KeepArchive) {
-        Remove-Item -Force $archivePath -ErrorAction SilentlyContinue
-    }
-
-    $layout = Resolve-ComfyLayout -InstallDir $comfyRoot
-    if ($layout.Kind -ne "portable" -or -not (Test-Path $layout.MainPy)) {
-        throw "Portable install looks incomplete at $PortableRoot"
-    }
-    Write-Host "Portable ComfyUI ready ($($layout.Kind))." -ForegroundColor Green
+if ((Test-ComfyLayoutReady $layout) -and $layout.Kind -eq "desktop" -and -not $ForcePortable) {
+    Write-Host "== ComfyUI Desktop detected ==" -ForegroundColor Cyan
+    Write-Host "App:            $($layout.AppDir)"
+    Write-Host "Code:           $($layout.ComfyRoot)"
+    Write-Host "User data:      $($layout.BaseDirectory)"
+    Write-Host "Checkpoints:    $($layout.CkptDir)  [$($layout.CkptDirSource)]"
+    Write-Host "Python:         $($layout.Python)"
+} elseif ((Test-ComfyLayoutReady $layout) -and $layout.Kind -in @("portable", "venv") -and -not $ForceReinstall) {
+    Write-Host "== ComfyUI $($layout.Kind) detected ==" -ForegroundColor Cyan
+    Write-Host "ComfyUI dir:    $($layout.ComfyRoot)"
+    Write-Host "Checkpoints:    $($layout.CkptDir)  [$($layout.CkptDirSource)]"
 } else {
-    Write-Host "Portable ComfyUI already present." -ForegroundColor Green
+    # Install portable only when nothing usable is present.
+    $download = if ($DownloadUrl) {
+        [pscustomobject]@{
+            Gpu = $Gpu
+            ArchiveName = (Split-Path $DownloadUrl -Leaf)
+            Url = $DownloadUrl
+        }
+    } else {
+        Get-ComfyPortableDownloadInfo -Gpu $Gpu
+    }
+
+    if (-not $PortableRoot) {
+        $configured = if ($InstallDir) { $InstallDir } else { Read-ComfyInstallDir -ProjectRoot $root -Fallback "" }
+        if ($configured -and $configured -notmatch 'Documents[\\/]+ComfyUI') {
+            $PortableRoot = Get-PortableRootFromComfyRoot -ComfyRoot $configured
+            # If configured path is .../ComfyUI, parent is portable root.
+            if ((Split-Path $configured -Leaf) -ieq "ComfyUI") {
+                $PortableRoot = Split-Path $configured -Parent
+            }
+        }
+        if (-not $PortableRoot) {
+            $PortableRoot = Get-DefaultComfyPortableRoot
+        }
+    }
+    $comfyRoot = Join-Path $PortableRoot "ComfyUI"
+    $archivePath = Join-Path $env:TEMP $download.ArchiveName
+
+    Write-Host "== ComfyUI portable setup ==" -ForegroundColor Cyan
+    Write-Host "GPU build:      $($download.Gpu)"
+    Write-Host "Portable root:  $PortableRoot"
+    Write-Host "ComfyUI dir:    $comfyRoot"
+
+    if ($ForceReinstall -and (Test-Path $PortableRoot)) {
+        throw "Refusing ForceReinstall without manual cleanup. Delete $PortableRoot first if you really want a clean install."
+    }
+
+    $existing = Resolve-ComfyLayout -InstallDir $comfyRoot
+    $needsInstall = -not (Test-ComfyLayoutReady $existing)
+
+    if ($needsInstall) {
+        if (-not (Test-Path $archivePath)) {
+            Write-Host "Downloading portable ComfyUI (large, ~2GB)..." -ForegroundColor Yellow
+            curl.exe -L --fail --retry 3 --output $archivePath $download.Url
+            if (-not $?) { throw "Failed to download $($download.Url)" }
+        } else {
+            Write-Host "Using existing archive: $archivePath" -ForegroundColor Cyan
+        }
+
+        $sevenZip = Ensure-7Zip
+        $extractParent = Split-Path $PortableRoot -Parent
+        if (-not (Test-Path $extractParent)) {
+            New-Item -ItemType Directory -Force -Path $extractParent | Out-Null
+        }
+
+        $stage = Join-Path $env:TEMP ("ComfyUI_portable_extract_" + [guid]::NewGuid().ToString("n"))
+        New-Item -ItemType Directory -Force -Path $stage | Out-Null
+        Write-Host "Extracting with $sevenZip ..." -ForegroundColor Yellow
+        & $sevenZip x $archivePath "-o$stage" -y
+        if ($LASTEXITCODE -ne 0) { throw "7-Zip extract failed with code $LASTEXITCODE" }
+
+        $extracted = Get-ChildItem $stage -Directory | Select-Object -First 1
+        if (-not $extracted) { throw "Extracted archive did not contain a top-level folder." }
+
+        if (Test-Path $PortableRoot) {
+            throw "Target already exists: $PortableRoot. Delete it or pass -PortableRoot."
+        }
+        Move-Item -LiteralPath $extracted.FullName -Destination $PortableRoot
+        Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+
+        if (-not $KeepArchive) {
+            Remove-Item -Force $archivePath -ErrorAction SilentlyContinue
+        }
+
+        $layout = Resolve-ComfyLayout -InstallDir $comfyRoot
+        if (-not (Test-ComfyLayoutReady $layout)) {
+            throw "Portable install looks incomplete at $PortableRoot"
+        }
+        Write-Host "Portable ComfyUI ready ($($layout.Kind))." -ForegroundColor Green
+    } else {
+        $layout = $existing
+        Write-Host "Portable ComfyUI already present." -ForegroundColor Green
+    }
 }
+
+if (-not (Test-ComfyLayoutReady $layout)) {
+    throw "No usable ComfyUI install found. Install ComfyUI Desktop, or re-run with -ForcePortable."
+}
+
+# Re-query live folder list if ComfyUI is already up (portable install path may skip Find-ComfyLayout enrichment).
+Update-ComfyLayoutCheckpointDir -Layout $layout -ProjectRoot $root | Out-Null
+Write-Host "Checkpoint dir: $($layout.CkptDir)  [$($layout.CkptDirSource)]" -ForegroundColor Cyan
 
 New-Item -ItemType Directory -Force -Path $layout.CkptDir | Out-Null
 $workflowsDir = Join-Path $layout.UserDir "workflows"
 New-Item -ItemType Directory -Force -Path $workflowsDir | Out-Null
 
 # Migrate checkpoints / workflows from legacy git install if present.
-if ((Test-Path $legacyDir) -and ($legacyDir -ne $layout.ComfyRoot)) {
+if ((Test-Path $legacyDir) -and ($legacyDir -ne $layout.ComfyRoot) -and ($legacyDir -ne $layout.BaseDirectory)) {
     $legacyCkpt = Join-Path $legacyDir "models\checkpoints"
     if (Test-Path $legacyCkpt) {
         Get-ChildItem $legacyCkpt -File -ErrorAction SilentlyContinue | ForEach-Object {
@@ -132,7 +162,7 @@ if (Test-Path $projectWf) {
 }
 
 if (-not $SkipCheckpoints) {
-    Write-Host "Ensuring ComfyUI checkpoints..." -ForegroundColor Yellow
+    Write-Host "Ensuring ComfyUI checkpoints in $($layout.CkptDir) ..." -ForegroundColor Yellow
     $checkpoints = @(
         @{
             Name = "sd_xl_turbo_1.0_fp16.safetensors"
@@ -171,8 +201,21 @@ if (-not $SkipCheckpoints) {
     }
 }
 
+# Persist resolved install_dir into config.yaml when present.
+$configPath = Join-Path $root "config.yaml"
+if (Test-Path $configPath) {
+    $installPosix = ($layout.InstallDir -replace '\\', '/')
+    $raw = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8
+    if ($raw -match '(?m)^(\s*install_dir:\s*).*$') {
+        $raw = [regex]::Replace($raw, '(?m)^(\s*install_dir:\s*).*$', "`${1}$installPosix", 1)
+        Set-Content -LiteralPath $configPath -Value $raw -Encoding UTF8 -NoNewline
+        Write-Host "Updated config.yaml comfyui.install_dir -> $installPosix" -ForegroundColor Cyan
+    }
+}
+
 Write-Host ""
-Write-Host "Set config.yaml comfyui.install_dir to:" -ForegroundColor Cyan
-Write-Host "  $($layout.ComfyRoot -replace '\\','/')"
+Write-Host "comfyui.install_dir:" -ForegroundColor Cyan
+Write-Host "  $($layout.InstallDir -replace '\\','/')"
+Write-Host "Kind: $($layout.Kind)"
 Write-Host "Start with: .\scripts\start-comfyui.ps1"
-Write-Host "ComfyUI portable setup complete." -ForegroundColor Green
+Write-Host "ComfyUI setup complete." -ForegroundColor Green

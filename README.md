@@ -47,15 +47,18 @@ http://<server-ip>:7860
 
 ## ComfyUI
 
-`setup.ps1` ставит официальный **Windows portable** ComfyUI и сам выбирает архив по GPU:
+`setup-comfyui.ps1` сначала ищет уже установленный **ComfyUI Desktop**, иначе ставит официальный **Windows portable** (архив по GPU):
 
-- `ComfyUI_windows_portable_nvidia.7z`
-- `ComfyUI_windows_portable_amd.7z`
-- `ComfyUI_windows_portable_intel.7z`
+- Desktop: `%LOCALAPPDATA%\Programs\ComfyUI`, user data обычно `%USERPROFILE%\Documents\ComfyUI`
+- Portable: `%LOCALAPPDATA%\MeshForge\ComfyUI_windows_portable` (`nvidia` / `amd` / `intel`)
 
-По умолчанию portable ставится в `C:\AI\ComfyUI_windows_portable`. В `config.yaml` путь к приложению:
+В `config.yaml` пишется путь к **user data / models** (не к Electron-exe):
 
-`comfyui.install_dir: C:/AI/ComfyUI_windows_portable/ComfyUI`
+- Desktop: `comfyui.install_dir: C:/Users/<you>/Documents/ComfyUI`
+- Portable: `.../ComfyUI_windows_portable/ComfyUI`
+
+Пустой `install_dir` больше не означает «магический `C:\AI\...`» — скрипты делают discovery.
+Каталог checkpoints берётся из живого ComfyUI (`GET /experiment/models`), если API доступен; иначе — `{install_dir|Desktop basePath}/models/checkpoints`.
 
 Checkpoint’ы:
 
@@ -66,9 +69,11 @@ Checkpoint’ы:
 
 `.\scripts\setup-comfyui.ps1 -QualityModels`
 
+Принудительно portable (игнорируя Desktop): `-ForcePortable`.
+
 Процессы:
 
-- `.\scripts\start-comfyui.ps1` — поднять API (`python_embeded`) и дождаться `/system_stats`
+- `.\scripts\start-comfyui.ps1` — поднять API (Desktop `.venv` + `--base-directory`, либо portable `python_embeded`) и дождаться `/system_stats`
 - `.\scripts\stop-comfyui.ps1` — остановить tracked/listening процесс
 - pid/log: `.runtime/comfyui.pid`, `.runtime/comfyui.out.log`, `.runtime/comfyui.err.log`
 
