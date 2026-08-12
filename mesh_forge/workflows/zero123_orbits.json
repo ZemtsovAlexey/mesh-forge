@@ -1,0 +1,230 @@
+{
+  "1": {
+    "class_type": "ImageOnlyCheckpointLoader",
+    "inputs": {
+      "ckpt_name": "__ZERO123_CHECKPOINT__"
+    }
+  },
+  "2": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "__FRONT_IMAGE__"
+    }
+  },
+  "3": {
+    "class_type": "StableZero123_Conditioning",
+    "inputs": {
+      "clip_vision": [
+        "1",
+        1
+      ],
+      "init_image": [
+        "2",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ],
+      "width": "__ZERO123_WIDTH__",
+      "height": "__ZERO123_HEIGHT__",
+      "batch_size": 1,
+      "elevation": "__ZERO123_ELEVATION__",
+      "azimuth": "__AZIMUTH_LEFT__"
+    }
+  },
+  "4": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": "__SEED__",
+      "steps": "__ZERO123_STEPS__",
+      "cfg": "__ZERO123_CFG__",
+      "sampler_name": "__ZERO123_SAMPLER__",
+      "scheduler": "__ZERO123_SCHEDULER__",
+      "denoise": 1,
+      "model": [
+        "1",
+        0
+      ],
+      "positive": [
+        "3",
+        0
+      ],
+      "negative": [
+        "3",
+        1
+      ],
+      "latent_image": [
+        "3",
+        2
+      ]
+    }
+  },
+  "5": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "4",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ]
+    }
+  },
+  "6": {
+    "class_type": "StableZero123_Conditioning",
+    "inputs": {
+      "clip_vision": [
+        "1",
+        1
+      ],
+      "init_image": [
+        "2",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ],
+      "width": "__ZERO123_WIDTH__",
+      "height": "__ZERO123_HEIGHT__",
+      "batch_size": 1,
+      "elevation": "__ZERO123_ELEVATION__",
+      "azimuth": "__AZIMUTH_BACK__"
+    }
+  },
+  "7": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": "__SEED__",
+      "steps": "__ZERO123_STEPS__",
+      "cfg": "__ZERO123_CFG__",
+      "sampler_name": "__ZERO123_SAMPLER__",
+      "scheduler": "__ZERO123_SCHEDULER__",
+      "denoise": 1,
+      "model": [
+        "1",
+        0
+      ],
+      "positive": [
+        "6",
+        0
+      ],
+      "negative": [
+        "6",
+        1
+      ],
+      "latent_image": [
+        "6",
+        2
+      ]
+    }
+  },
+  "8": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "7",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ]
+    }
+  },
+  "9": {
+    "class_type": "StableZero123_Conditioning",
+    "inputs": {
+      "clip_vision": [
+        "1",
+        1
+      ],
+      "init_image": [
+        "2",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ],
+      "width": "__ZERO123_WIDTH__",
+      "height": "__ZERO123_HEIGHT__",
+      "batch_size": 1,
+      "elevation": "__ZERO123_ELEVATION__",
+      "azimuth": "__AZIMUTH_RIGHT__"
+    }
+  },
+  "10": {
+    "class_type": "KSampler",
+    "inputs": {
+      "seed": "__SEED__",
+      "steps": "__ZERO123_STEPS__",
+      "cfg": "__ZERO123_CFG__",
+      "sampler_name": "__ZERO123_SAMPLER__",
+      "scheduler": "__ZERO123_SCHEDULER__",
+      "denoise": 1,
+      "model": [
+        "1",
+        0
+      ],
+      "positive": [
+        "9",
+        0
+      ],
+      "negative": [
+        "9",
+        1
+      ],
+      "latent_image": [
+        "9",
+        2
+      ]
+    }
+  },
+  "11": {
+    "class_type": "VAEDecode",
+    "inputs": {
+      "samples": [
+        "10",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ]
+    }
+  },
+  "22": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "__OUTPUT_LEFT__",
+      "images": [
+        "5",
+        0
+      ]
+    }
+  },
+  "23": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "__OUTPUT_BACK__",
+      "images": [
+        "8",
+        0
+      ]
+    }
+  },
+  "24": {
+    "class_type": "SaveImage",
+    "inputs": {
+      "filename_prefix": "__OUTPUT_RIGHT__",
+      "images": [
+        "11",
+        0
+      ]
+    }
+  }
+}

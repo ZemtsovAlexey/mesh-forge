@@ -119,6 +119,44 @@ def create_project(name: str) -> ProjectManifest:
     return manifest
 
 
+def rename_project(manifest: ProjectManifest, name: str) -> ProjectManifest:
+    cleaned = (name or "").strip()
+    if not cleaned:
+        raise ValueError("Project name is empty")
+    if len(cleaned) > 120:
+        raise ValueError("Project name is too long")
+    manifest.name = cleaned
+    manifest.save()
+    return manifest
+
+
+def delete_project(project_id: str) -> None:
+    from mesh_forge.config import load_config
+
+    root = load_config().projects_dir / project_id
+    if not root.is_dir() or not (root / "manifest.yaml").is_file():
+        raise FileNotFoundError(f"Project not found: {project_id}")
+    shutil.rmtree(root)
+
+
+def duplicate_project(manifest: ProjectManifest, *, name: str | None = None) -> ProjectManifest:
+    """Copy project folder to a new id (mesh history + chat included)."""
+    new_id = uuid.uuid4().hex[:12]
+    from mesh_forge.config import load_config
+
+    projects_dir = load_config().projects_dir
+    dest = projects_dir / new_id
+    if dest.exists():
+        raise RuntimeError(f"Project id collision: {new_id}")
+    shutil.copytree(manifest.root, dest)
+    copied = ProjectManifest.load(new_id)
+    # load uses folder name; ensure id field matches
+    copied.id = new_id
+    copied.name = (name or f"{manifest.name} (копия)").strip()[:120]
+    copied.save()
+    return copied
+
+
 def add_version(
     manifest: ProjectManifest,
     mesh_src: Path,

@@ -140,20 +140,99 @@ async function loadProjects(selectId = activeProjectId) {
   list.innerHTML = "";
   if (!projects.length) {
     list.innerHTML = "<li><p class='muted' style='padding:8px'>Нет проектов</p></li>";
+    activeProjectId = null;
     return;
   }
   for (const p of projects) {
     const li = document.createElement("li");
+    li.className = "project-row";
+
     const btn = document.createElement("button");
     btn.type = "button";
-    btn.className = p.id === selectId ? "active" : "";
-    btn.innerHTML = `${p.name}<span class="sub">v${p.current_version}${p.has_mesh ? " · mesh" : ""}</span>`;
+    btn.className = `project-select ${p.id === selectId ? "active" : ""}`;
+    btn.innerHTML = `${escapeHtml(p.name)}<span class="sub">v${p.current_version}${p.has_mesh ? " · mesh" : ""}</span>`;
     btn.addEventListener("click", () => selectProject(p.id));
+
+    const actions = document.createElement("div");
+    actions.className = "project-actions";
+    actions.innerHTML = `
+      <button type="button" class="icon-btn" title="Переименовать" data-act="rename">✎</button>
+      <button type="button" class="icon-btn" title="Копировать" data-act="dup">⧉</button>
+      <button type="button" class="icon-btn danger" title="Удалить" data-act="del">✕</button>
+    `;
+    actions.querySelector('[data-act="rename"]').addEventListener("click", (e) => {
+      e.stopPropagation();
+      renameProject(p.id, p.name);
+    });
+    actions.querySelector('[data-act="dup"]').addEventListener("click", (e) => {
+      e.stopPropagation();
+      duplicateProject(p.id, p.name);
+    });
+    actions.querySelector('[data-act="del"]').addEventListener("click", (e) => {
+      e.stopPropagation();
+      deleteProject(p.id, p.name);
+    });
+
     li.appendChild(btn);
+    li.appendChild(actions);
     list.appendChild(li);
   }
-  if (selectId) await selectProject(selectId, false);
-  else if (projects.length && !activeProjectId) await selectProject(projects[0].id, false);
+  if (selectId && projects.some((p) => p.id === selectId)) await selectProject(selectId, false);
+  else if (projects.length) await selectProject(projects[0].id, false);
+}
+
+async function renameProject(id, currentName) {
+  const name = prompt("Новое имя проекта", currentName || "");
+  if (name == null) return;
+  const cleaned = name.trim();
+  if (!cleaned) return toast("Имя пустое", "error");
+  try {
+    await api(`/api/projects/${id}`, { method: "PATCH", body: JSON.stringify({ name: cleaned }) });
+    toast("Переименовано");
+    await loadProjects(id);
+  } catch (e) {
+    toast(e.message, "error");
+  }
+}
+
+async function duplicateProject(id, currentName) {
+  const name = prompt("Имя копии", `${currentName || "проект"} (копия)`);
+  if (name == null) return;
+  try {
+    const p = await api(`/api/projects/${id}/duplicate`, {
+      method: "POST",
+      body: JSON.stringify({ name: name.trim() || null }),
+    });
+    toast(`Копия: ${p.name}`);
+    await loadProjects(p.id);
+  } catch (e) {
+    toast(e.message, "error");
+  }
+}
+
+async function deleteProject(id, name) {
+  try {
+    const res = await fetch(`/api/projects/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(text || res.statusText);
+    }
+    toast("Удалено");
+    if (activeProjectId === id) {
+      activeProjectId = null;
+      viewer?.clear();
+      $("#viewer-empty")?.classList.remove("hidden");
+      $("#btn-download")?.classList.add("hidden");
+      $("#btn-regenerate")?.classList.add("hidden");
+      $("#project-meta").innerHTML = `<p class="muted">Проект не выбран</p>`;
+      $("#history-list").innerHTML = "";
+      $("#chat-log").innerHTML = "";
+      $("#qc-log").textContent = "—";
+    }
+    await loadProjects(activeProjectId);
+  } catch (e) {
+    toast(e.message, "error");
+  }
 }
 
 async function selectProject(id, refreshList = true) {
@@ -173,6 +252,11 @@ async function selectProject(id, refreshList = true) {
     $("#viewer-empty").classList.remove("hidden");
     $("#btn-download").classList.add("hidden");
     $("#qc-log").textContent = "—";
+  }
+  const regen = $("#btn-regenerate");
+  if (regen) {
+    const canRegen = (project.versions || []).some((v) => (v.instruction || "").trim());
+    regen.classList.toggle("hidden", !canRegen);
   }
 }
 
@@ -334,17 +418,39 @@ async function confirmChat() {
   });
 }
 
+async function regenerateProject() {
+  if (!activeProjectId) return toast("Выберите проект", "error");
+  const fd = new FormData();
+  fd.append("solidify_mm", $("#job-solid")?.value || "0");
+  runOp("Перезапуск генерации…", async () => {
+    const result = await api(`/api/projects/${activeProjectId}/regenerate`, { method: "POST", body: fd });
+    await loadChat();
+    return result;
+  });
+}
+
 function renderHistory(p) {
   const ul = $("#history-list");
   if (!p.versions?.length) {
     ul.innerHTML = "<li class='muted'>Пусто</li>";
     return;
   }
-  ul.innerHTML = p.versions.map((v) => `
+  ul.innerHTML = p.versions.map((v) => {
+    const images = (v.artifacts || []).filter((a) => a.kind === "image");
+    const thumbs = images.length
+      ? `<div class="hist-views">${images.map((a) => {
+          const name = (a.path || "").split(/[/\\]/).pop();
+          if (!name) return "";
+          return `<img class="hist-view" src="/api/projects/${p.id}/artifacts/${v.version}/${encodeURIComponent(name)}?t=${Date.now()}" alt="${a.label || name}" title="${a.label || name}" />`;
+        }).join("")}</div>`
+      : "";
+    return `
     <li><strong>v${v.version}</strong> [${v.branch}] ${v.action}
-    ${v.instruction ? `<br><span>${v.instruction.slice(0, 80)}</span>` : ""}
+    ${v.instruction ? `<br><span>${escapeHtml(v.instruction.slice(0, 80))}</span>` : ""}
+    ${thumbs}
     ${v.artifacts?.length ? `<br><span class="muted">${v.artifacts.map((a) => a.label).join(", ")}</span>` : ""}</li>
-  `).join("");
+  `;
+  }).join("");
 }
 
 async function loadMesh(url) {
@@ -409,6 +515,7 @@ function bindActions() {
 
   $("#btn-chat-send")?.addEventListener("click", () => sendChatMessage());
   $("#btn-chat-confirm")?.addEventListener("click", () => confirmChat());
+  $("#btn-regenerate")?.addEventListener("click", () => regenerateProject());
   $("#chat-input")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -456,15 +563,28 @@ function bindActions() {
 
   $("#toggle-settings").addEventListener("click", () => $("#settings-body").classList.toggle("hidden"));
   $("#toggle-gen-settings")?.addEventListener("click", () => $("#gen-settings-body").classList.toggle("hidden"));
+  $("#gen-quality")?.addEventListener("change", () => {
+    applyPresetToKnobs($("#gen-quality").value);
+  });
   $("#btn-gen-save")?.addEventListener("click", async () => {
     const quality_preset = $("#gen-quality").value;
-    setLoading(true, quality_preset === "quality"
+    const view_consistency = $("#gen-views")?.value || "img2img";
+    const mesh_postprocess = $("#gen-postprocess")?.checked ?? true;
+    const knobs = readGenKnobs();
+    const needsHeavyDl = quality_preset === "quality" || view_consistency === "zero123";
+    setLoading(true, needsHeavyDl
       ? "Сохранение + загрузка checkpoints (может занять несколько минут)…"
       : "Сохранение…");
     try {
       const data = await api("/api/settings/generation", {
         method: "PUT",
-        body: JSON.stringify({ quality_preset, download_missing: true }),
+        body: JSON.stringify({
+          quality_preset,
+          view_consistency,
+          mesh_postprocess,
+          knobs,
+          download_missing: true,
+        }),
       });
       renderGenerationSettings(data);
       if (data.downloaded_checkpoints?.length) {
@@ -472,7 +592,7 @@ function bindActions() {
       } else if (data.missing_checkpoints?.length) {
         toast(`Не хватает: ${data.missing_checkpoints.join(", ")}`, "error");
       } else {
-        toast(quality_preset === "quality" ? "Quality готов" : "Draft сохранён");
+        toast("Настройки генерации сохранены");
       }
       loadStatus();
     } catch (e) {
@@ -501,25 +621,139 @@ function bindActions() {
   });
 }
 
+function numVal(id, fallback) {
+  const el = $(id);
+  if (!el || el.value === "") return fallback;
+  const n = Number(el.value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+let genSettingsCache = null;
+
+function applyPresetToKnobs(presetKey) {
+  const preset = genSettingsCache?.presets?.[presetKey];
+  if (!preset) return;
+  const set = (id, v) => { const el = $(id); if (el && v != null) el.value = v; };
+  set("#knob-ckpt", preset.checkpoint);
+  set("#knob-mesh-ckpt", preset.mesh_checkpoint);
+  set("#knob-image-ckpt", preset.image_checkpoint || preset.mesh_checkpoint);
+  set("#knob-steps", preset.steps);
+  set("#knob-cfg", preset.cfg);
+  set("#knob-mesh-steps", preset.mesh_steps);
+  set("#knob-mesh-cfg", preset.mesh_cfg);
+  set("#knob-mesh-guidance", preset.mesh_guidance);
+}
+
+function readGenKnobs() {
+  const str = (id, fallback) => (($(id)?.value || fallback) || "").trim();
+  return {
+    checkpoint: str("#knob-ckpt", "sd_xl_turbo_1.0_fp16.safetensors"),
+    mesh_checkpoint: str("#knob-mesh-ckpt", "hunyuan3d-dit-v2-mv-turbo_fp16.safetensors"),
+    image_checkpoint: str("#knob-image-ckpt", "hunyuan3d-dit-v2-mv-turbo_fp16.safetensors"),
+    zero123_checkpoint: str("#knob-z-ckpt", "stable_zero123.ckpt"),
+    width: numVal("#knob-width", 768),
+    height: numVal("#knob-height", 768),
+    steps: numVal("#knob-steps", 8),
+    cfg: numVal("#knob-cfg", 1.5),
+    view_denoise: numVal("#knob-denoise", 0.58),
+    view_denoise_turbo: numVal("#knob-denoise-turbo", 0.72),
+    view_sampler: str("#knob-sampler", "euler"),
+    view_scheduler: str("#knob-scheduler", "sgm_uniform"),
+    zero123_width: numVal("#knob-z-width", 256),
+    zero123_height: numVal("#knob-z-height", 256),
+    zero123_steps: numVal("#knob-z-steps", 20),
+    zero123_cfg: numVal("#knob-z-cfg", 3.0),
+    zero123_sampler: str("#knob-z-sampler", "euler"),
+    zero123_scheduler: str("#knob-z-scheduler", "normal"),
+    zero123_elevation: numVal("#knob-elev", 0),
+    zero123_azimuth_left: numVal("#knob-az-l", -90),
+    zero123_azimuth_back: numVal("#knob-az-b", 180),
+    zero123_azimuth_right: numVal("#knob-az-r", 90),
+    mesh_steps: numVal("#knob-mesh-steps", 20),
+    mesh_cfg: numVal("#knob-mesh-cfg", 4),
+    mesh_guidance: numVal("#knob-mesh-guidance", 3.5),
+    mesh_resolution: numVal("#knob-mesh-res", 3072),
+    mesh_octree_resolution: numVal("#knob-mesh-octree", 256),
+    mesh_num_chunks: numVal("#knob-mesh-chunks", 8000),
+  };
+}
+
+function fillGenKnobs(knobs) {
+  if (!knobs) return;
+  const set = (id, v) => { const el = $(id); if (el && v != null) el.value = v; };
+  set("#knob-ckpt", knobs.checkpoint);
+  set("#knob-mesh-ckpt", knobs.mesh_checkpoint);
+  set("#knob-image-ckpt", knobs.image_checkpoint);
+  set("#knob-z-ckpt", knobs.zero123_checkpoint);
+  set("#knob-steps", knobs.steps);
+  set("#knob-cfg", knobs.cfg);
+  set("#knob-width", knobs.width);
+  set("#knob-height", knobs.height);
+  set("#knob-denoise", knobs.view_denoise);
+  set("#knob-denoise-turbo", knobs.view_denoise_turbo);
+  set("#knob-sampler", knobs.view_sampler);
+  set("#knob-scheduler", knobs.view_scheduler);
+  set("#knob-z-width", knobs.zero123_width);
+  set("#knob-z-height", knobs.zero123_height);
+  set("#knob-z-steps", knobs.zero123_steps);
+  set("#knob-z-cfg", knobs.zero123_cfg);
+  set("#knob-z-sampler", knobs.zero123_sampler);
+  set("#knob-z-scheduler", knobs.zero123_scheduler);
+  set("#knob-elev", knobs.zero123_elevation);
+  set("#knob-az-l", knobs.zero123_azimuth_left);
+  set("#knob-az-b", knobs.zero123_azimuth_back);
+  set("#knob-az-r", knobs.zero123_azimuth_right);
+  set("#knob-mesh-steps", knobs.mesh_steps);
+  set("#knob-mesh-cfg", knobs.mesh_cfg);
+  set("#knob-mesh-guidance", knobs.mesh_guidance);
+  set("#knob-mesh-res", knobs.mesh_resolution);
+  set("#knob-mesh-octree", knobs.mesh_octree_resolution);
+  set("#knob-mesh-chunks", knobs.mesh_num_chunks);
+}
+
 function renderGenerationSettings(data) {
+  genSettingsCache = data;
   const sel = $("#gen-quality");
   if (sel && data.quality_preset) sel.value = data.quality_preset;
+  const views = $("#gen-views");
+  if (views) {
+    const modes = data.view_modes || {};
+    if (Object.keys(modes).length) {
+      views.innerHTML = "";
+      for (const [key, info] of Object.entries(modes)) {
+        const opt = document.createElement("option");
+        opt.value = key;
+        opt.textContent = info.label || key;
+        views.appendChild(opt);
+      }
+    }
+    if (data.view_consistency) views.value = data.view_consistency;
+  }
+  const post = $("#gen-postprocess");
+  if (post) post.checked = data.mesh_postprocess !== false;
+  fillGenKnobs(data.knobs || data.active?.knobs);
   const active = data.active || {};
+  const knobs = data.knobs || active.knobs || {};
   const activeEl = $("#gen-active");
   if (activeEl) {
     activeEl.textContent = [
-      `views: ${active.checkpoint || "—"}`,
-      `  steps=${active.steps} cfg=${active.cfg}`,
-      `mesh: ${active.mesh_checkpoint || "—"}`,
-      `  steps=${active.mesh_steps} cfg=${active.mesh_cfg}`,
-    ].join("\n");
+      `SDXL: ${knobs.checkpoint || active.checkpoint || "—"}`,
+      `  steps=${knobs.steps ?? active.steps} cfg=${knobs.cfg ?? active.cfg} ${knobs.width}x${knobs.height}`,
+      `Hunyuan: ${knobs.mesh_checkpoint || active.mesh_checkpoint || "—"}`,
+      `  steps=${knobs.mesh_steps ?? active.mesh_steps} cfg=${knobs.mesh_cfg ?? active.mesh_cfg} res=${knobs.mesh_resolution} octree=${knobs.mesh_octree_resolution}`,
+      `проекции: ${active.view_consistency || data.view_consistency || "img2img"}`,
+      `postprocess: ${active.mesh_postprocess !== false && data.mesh_postprocess !== false ? "on" : "off"}`,
+      active.view_consistency === "zero123" || data.view_consistency === "zero123"
+        ? `zero123: ${knobs.zero123_checkpoint || active.zero123_checkpoint || "stable_zero123.ckpt"} ${knobs.zero123_steps}st cfg=${knobs.zero123_cfg}`
+        : null,
+    ].filter(Boolean).join("\n");
   }
   const miss = $("#gen-missing");
   if (miss) {
     const missing = data.missing_checkpoints || [];
     const errs = data.download_errors || [];
     if (missing.length) {
-      miss.textContent = `Нет файлов: ${missing.join(", ")}. Нажмите «Сохранить» — скачаю автоматически (~5–10 ГБ).`;
+      miss.textContent = `Нет файлов: ${missing.join(", ")}. Нажмите «Сохранить» — скачаю автоматически.`;
     } else if (errs.length) {
       miss.textContent = errs.join("; ");
     } else {

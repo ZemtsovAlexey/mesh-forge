@@ -29,30 +29,87 @@ def save_mesh(mesh: trimesh.Trimesh, path: Path) -> Path:
 
 
 def orient_upright(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
-    """Rotate so the longest bbox axis becomes +Y (viewer up), then sit on ground."""
+    """Seat the mesh with the most stable base on -Y ground (viewer up = +Y).
+
+    Tries the 6 axis-aligned "which axis is up" poses and keeps the one with the
+    largest bottom footprint and lowest center of mass. Longest-axis→up was wrong
+    for lying animals (tipped them onto nose/tail).
+    """
     mesh = mesh.copy()
-    extents = np.asarray(mesh.extents, dtype=float)
-    long_axis = int(np.argmax(extents))
-    if long_axis != 1:
-        if long_axis == 0:  # X -> Y
-            matrix = trimesh.transformations.rotation_matrix(np.pi / 2, [0, 0, 1])
-        else:  # Z -> Y
-            matrix = trimesh.transformations.rotation_matrix(-np.pi / 2, [1, 0, 0])
-        mesh.apply_transform(matrix)
+    if len(mesh.vertices) == 0:
+        return mesh
 
-    # Prefer taller half above centroid (avoid head-down)
-    if float(np.mean(mesh.vertices[:, 1] - mesh.centroid[1])) < 0:
-        mesh.apply_transform(trimesh.transformations.rotation_matrix(np.pi, [1, 0, 0]))
+    best = None
+    best_score = -1.0
+    for matrix in _axis_up_rotations():
+        cand = mesh.copy()
+        if matrix is not None:
+            cand.apply_transform(matrix)
+        cand = _seat_on_ground(cand)
+        score = _base_stability_score(cand)
+        if score > best_score:
+            best_score = score
+            best = cand
+    return best if best is not None else _seat_on_ground(mesh)
 
+
+def _axis_up_rotations() -> list:
+    """Identity + rotations that map ±X / ±Z onto +Y."""
+    R = trimesh.transformations.rotation_matrix
+    return [
+        None,  # +Y already up
+        R(np.pi, [1, 0, 0]),  # -Y -> +Y
+        R(np.pi / 2, [0, 0, 1]),  # +X -> +Y
+        R(-np.pi / 2, [0, 0, 1]),  # -X -> +Y
+        R(-np.pi / 2, [1, 0, 0]),  # +Z -> +Y
+        R(np.pi / 2, [1, 0, 0]),  # -Z -> +Y
+    ]
+
+
+def _seat_on_ground(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
     bounds = mesh.bounds
-    # Center XZ, put min Y on ground
-    shift = np.array([
+    mesh.apply_translation([
         -(bounds[0][0] + bounds[1][0]) / 2,
         -bounds[0][1],
         -(bounds[0][2] + bounds[1][2]) / 2,
     ])
-    mesh.apply_translation(shift)
     return mesh
+
+
+def _footprint_score(mesh: trimesh.Trimesh, *, end: str) -> float:
+    """XZ extent of vertices near the low or high end of the Y axis."""
+    verts = np.asarray(mesh.vertices, dtype=np.float64)
+    if len(verts) == 0:
+        return 0.0
+    ys = verts[:, 1]
+    y_min = float(ys.min())
+    y_max = float(ys.max())
+    span = max(y_max - y_min, 1e-9)
+    band = 0.12 * span
+    if end == "low":
+        mask = ys <= (y_min + band)
+    else:
+        mask = ys >= (y_max - band)
+    slice_pts = verts[mask]
+    if len(slice_pts) < 8:
+        return float(len(slice_pts))
+    return float(np.ptp(slice_pts[:, 0]) * np.ptp(slice_pts[:, 2])) * (1.0 + 0.01 * len(slice_pts))
+
+
+def _base_stability_score(mesh: trimesh.Trimesh) -> float:
+    """Higher = flatter, wider base and lower center of mass."""
+    verts = np.asarray(mesh.vertices, dtype=np.float64)
+    if len(verts) < 8:
+        return 0.0
+    ys = verts[:, 1]
+    y_min = float(ys.min())
+    y_max = float(ys.max())
+    span = max(y_max - y_min, 1e-9)
+    footprint = _footprint_score(mesh, end="low")
+    com_y = float(np.mean(ys))
+    # 0 at ground, 1 at top
+    com_rel = (com_y - y_min) / span
+    return float(footprint) / (0.25 + com_rel)
 
 
 def scale_axis(mesh: trimesh.Trimesh, axis: str, value_mm: float) -> trimesh.Trimesh:
@@ -92,37 +149,132 @@ def normalize_height_mm(mesh: trimesh.Trimesh, target_height_mm: float = 160.0) 
     return mesh
 
 
-def keep_largest_component(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
-    """Drop tiny floating debris; keep all significant connected parts."""
+def keep_largest_component(
+    mesh: trimesh.Trimesh,
+    *,
+    single: bool = True,
+    min_ratio: float = 0.02,
+) -> trimesh.Trimesh:
+    """Drop floaters / duplicate Hunyuan bodies; keep the primary figurine.
+
+    ``single=True`` (default): keep the largest component **plus** nearby
+    fragments that belong to the same body (legs/ears often disconnect). Far
+    twin shells of similar size are dropped.
+
+    ``single=False``: keep every component above ``min_ratio`` of the largest.
+    """
+    mesh = mesh.copy()
     try:
-        parts = mesh.split(only_watertight=False)
+        mesh.merge_vertices()
+        mesh.remove_unreferenced_vertices()
     except Exception:
+        pass
+    if len(mesh.faces) == 0:
         return mesh
-    if not parts or len(parts) <= 1:
+
+    components: list[np.ndarray] = []
+    try:
+        if len(getattr(mesh, "face_adjacency", [])) == 0:
+            try:
+                trimesh.grouping.merge_vertices(mesh, digits_vertex=5)
+                mesh.remove_unreferenced_vertices()
+                mesh._cache.clear()
+            except Exception:
+                pass
+        if len(getattr(mesh, "face_adjacency", [])) > 0:
+            components = list(
+                trimesh.graph.connected_components(
+                    mesh.face_adjacency,
+                    min_len=1,
+                    nodes=np.arange(len(mesh.faces)),
+                )
+            )
+    except Exception as exc:
+        logger.debug("face adjacency components failed: %s", exc)
+
+    if len(components) <= 1:
+        if len(getattr(mesh, "face_adjacency", [])) == 0:
+            logger.debug("keep_largest_component: no face adjacency; skip")
         return mesh
-    sizes = [len(part.faces) for part in parts]
-    largest = max(sizes) if sizes else 0
-    if largest <= 0:
+
+    sizes = [len(c) for c in components]
+    largest_i = int(np.argmax(sizes))
+    largest = sizes[largest_i]
+    if largest <= 4 and len(components) > 32:
+        logger.warning(
+            "keep_largest_component: fragmented adjacency (%d parts, largest=%d); skip",
+            len(components),
+            largest,
+        )
         return mesh
-    threshold = max(50, int(0.02 * largest))
-    kept = [part for part in parts if len(part.faces) >= threshold]
-    if not kept:
-        kept = [max(parts, key=lambda part: len(part.faces))]
-    if len(kept) == len(parts):
+
+    if single:
+        keep_idx = _select_primary_body_faces(mesh, components, largest_i)
+    else:
+        threshold = max(50, int(min_ratio * largest))
+        keep_idx = np.concatenate([c for c in components if len(c) >= threshold])
+
+    if len(keep_idx) >= len(mesh.faces):
         return mesh
-    dropped = sum(sizes) - sum(len(p.faces) for p in kept)
+    mask = np.zeros(len(mesh.faces), dtype=bool)
+    mask[np.asarray(keep_idx, dtype=np.int64)] = True
+    dropped = int((~mask).sum())
+    kept_n = 0
+    for c in components:
+        idx = np.asarray(c, dtype=np.int64)
+        if idx.size and bool(mask[idx].all()):
+            kept_n += 1
+    mesh.update_faces(mask)
+    mesh.remove_unreferenced_vertices()
     logger.info(
-        "keep_largest_component: %d parts -> kept %d (dropped %d faces)",
-        len(parts),
-        len(kept),
+        "keep_largest_component: %d parts -> kept %d (%d faces, dropped %d, single=%s)",
+        len(components),
+        kept_n,
+        int(mask.sum()),
         dropped,
+        single,
     )
-    if len(kept) == 1:
-        return kept[0]
-    try:
-        return trimesh.util.concatenate(kept)
-    except Exception:
-        return max(kept, key=lambda part: len(part.faces))
+    return mesh
+
+
+def _select_primary_body_faces(
+    mesh: trimesh.Trimesh,
+    components: list[np.ndarray],
+    largest_i: int,
+) -> np.ndarray:
+    """Largest shell + nearby fragments; drop far twin / paper-thin debris."""
+    seed = components[largest_i]
+    seed_mesh = mesh.submesh([seed], append=True)
+    seed_centroid = np.asarray(seed_mesh.centroid, dtype=np.float64)
+    seed_bounds = np.asarray(seed_mesh.bounds, dtype=np.float64)
+    diag = float(np.linalg.norm(seed_mesh.extents))
+    pad = max(0.35 * diag, 1e-6)
+    lo, hi = seed_bounds[0] - pad, seed_bounds[1] + pad
+    seed_faces = len(seed)
+    min_keep = max(200, int(0.01 * seed_faces))
+
+    kept: list[np.ndarray] = [np.asarray(seed, dtype=np.int64)]
+    for i, faces in enumerate(components):
+        if i == largest_i:
+            continue
+        n = len(faces)
+        if n < min_keep:
+            continue
+        part = mesh.submesh([faces], append=True)
+        extents = np.asarray(part.extents, dtype=np.float64)
+        # Paper-thin sheets / walls
+        if float(np.min(extents)) < 0.03 * max(float(np.max(extents)), 1e-9):
+            continue
+        centroid = np.asarray(part.centroid, dtype=np.float64)
+        # Far twin of similar size (classic Hunyuan double body)
+        if n >= 0.45 * seed_faces:
+            dist = float(np.linalg.norm(centroid - seed_centroid))
+            if dist > 0.45 * diag:
+                continue
+        if not (np.all(centroid >= lo) and np.all(centroid <= hi)):
+            continue
+        kept.append(np.asarray(faces, dtype=np.int64))
+    return np.concatenate(kept)
 
 
 def remove_needle_faces(mesh: trimesh.Trimesh, min_edge_mm: float = 0.08) -> trimesh.Trimesh:
@@ -191,17 +343,16 @@ def repair_reconstruction_mesh(
     mesh: trimesh.Trimesh,
     *,
     target_faces: int = 120_000,
-    smooth_iters: int = 3,
+    smooth_iters: int = 2,
     min_edge_mm: float = 0.08,
     close_holes: bool = True,
-    voxel_mm: float = 1.0,
+    voxel_mm: float = 0.0,
 ) -> trimesh.Trimesh:
     """
-    Post-process ComfyUI / Hunyuan raw meshes.
+    Light post-process for ComfyUI / Hunyuan meshes.
 
-    Order matters: voxel-remesh while the surface is still dense, then
-    light cleanup / decimate. Needle filters before voxel often leave an
-    open shell that marching-cubes cannot seal.
+    Preserve detail by default. Voxel remesh only when explicitly enabled and the
+    mesh looks pathological (tiny edges / huge face count + open).
     """
     baseline = max(len(mesh.faces), 1)
     current = mesh
@@ -228,9 +379,24 @@ def repair_reconstruction_mesh(
 
     _step("basic_repair", lambda m: try_make_watertight(m, max_faces_for_fill=0))
 
-    # Seal early (raw Hunyuan nets voxelize much better than pre-trimmed ones).
+    # Voxel only for pathological open/spiky nets. Good ComfyUI meshes stay intact.
     sealed = bool(getattr(current, "is_watertight", False))
+    needs_voxel = False
     if close_holes and voxel_mm and float(voxel_mm) > 0 and not sealed:
+        try:
+            edges = current.edges_unique_length
+            min_e = float(np.min(edges)) if len(edges) else 1.0
+        except Exception:
+            min_e = 1.0
+        needs_voxel = min_e < max(float(min_edge_mm) * 0.5, 0.02) or len(current.faces) > 400_000
+        if not needs_voxel:
+            logger.info(
+                "repair_reconstruction: skip voxel (open but not pathological; min_edge=%.4f faces=%d)",
+                min_e,
+                len(current.faces),
+            )
+
+    if needs_voxel:
         pitches = []
         base = float(voxel_mm)
         for p in (base, base * 1.5, max(base * 2.0, 2.0)):
@@ -270,14 +436,15 @@ def repair_reconstruction_mesh(
             try:
                 target_h = float(np.max(np.asarray(source.extents, dtype=float)))
                 current = normalize_height_mm(current, target_h)
+                current = orient_upright(current)
             except Exception as exc:
                 logger.debug("re-normalize after voxel skipped: %s", exc)
 
     if sealed and smooth_iters > 0:
-        _step("smooth_sealed", lambda m: smooth_mesh(m, iterations=max(1, min(smooth_iters, 3))))
+        _step("smooth_sealed", lambda m: smooth_mesh(m, iterations=max(1, min(smooth_iters, 2))))
     elif not sealed:
-        # Fallback path when voxel could not seal.
-        _step("keep_components", keep_largest_component)
+        # Light cleanup without destroying ComfyUI detail.
+        _step("keep_components", lambda m: keep_largest_component(m, single=True))
         _step("remove_needles", lambda m: remove_needle_faces(m, min_edge_mm=min_edge_mm))
         if close_holes:
             fill_cap = max(int(target_faces or 120_000) * 2, 200_000)
@@ -290,7 +457,7 @@ def repair_reconstruction_mesh(
 
                 _step("pymeshlab", _pml)
         if smooth_iters > 0:
-            _step("smooth", lambda m: smooth_mesh(m, iterations=smooth_iters))
+            _step("smooth", lambda m: smooth_mesh(m, iterations=min(smooth_iters, 2)))
 
     target = int(target_faces) if target_faces else 0
     if target > 0 and len(current.faces) > int(target * 1.15):
@@ -300,11 +467,18 @@ def repair_reconstruction_mesh(
             if sealed and not bool(getattr(current, "is_watertight", False)):
                 logger.warning("decimate re-opened mesh; reverting")
                 current = before_decimate
+            else:
+                try:
+                    trimesh.grouping.merge_vertices(current, digits_vertex=5)
+                    current.remove_unreferenced_vertices()
+                    current._cache.clear()
+                except Exception:
+                    pass
 
     # Never run needle/component filters on a sealed mesh — they reopen holes.
     if not bool(getattr(current, "is_watertight", False)):
         _step("remove_needles_final", lambda m: remove_needle_faces(m, min_edge_mm=min_edge_mm * 0.5))
-        _step("keep_components_final", keep_largest_component)
+        _step("keep_components_final", lambda m: keep_largest_component(m, single=True))
 
     try:
         trimesh.repair.fix_normals(current)

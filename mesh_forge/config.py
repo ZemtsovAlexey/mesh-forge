@@ -61,15 +61,34 @@ class ComfyUIConfig:
     install_dir: str = ""
     # draft = turbo models (fast); quality = full MV + SDXL base (slower, cleaner)
     quality_preset: str = "draft"
+    # img2img | zero123 | off — how left/back/right views are produced from the front
+    view_consistency: str = "img2img"
     checkpoint: str = "sd_xl_turbo_1.0_fp16.safetensors"
     mesh_checkpoint: str = "hunyuan3d-dit-v2-mv-turbo_fp16.safetensors"
     image_checkpoint: str = "hunyuan3d-dit-v2-mv-turbo_fp16.safetensors"
+    zero123_checkpoint: str = "stable_zero123.ckpt"
     negative_prompt: str = "blurry, lowpoly, cropped, watermark, text, logo, frame"
     width: int = 768
     height: int = 768
     steps: int = 8
     cfg: float = 1.5
     view_count: int = 4
+    # img2img orbit strength (side views from front)
+    view_denoise: float = 0.58
+    view_denoise_turbo: float = 0.72
+    view_sampler: str = "euler"
+    view_scheduler: str = "sgm_uniform"
+    # Zero123 novel-view orbits
+    zero123_width: int = 256
+    zero123_height: int = 256
+    zero123_steps: int = 20
+    zero123_cfg: float = 3.0
+    zero123_sampler: str = "euler"
+    zero123_scheduler: str = "normal"
+    zero123_elevation: float = 0.0
+    zero123_azimuth_left: float = -90.0
+    zero123_azimuth_back: float = 180.0
+    zero123_azimuth_right: float = 90.0
     mesh_resolution: int = 3072
     mesh_steps: int = 20
     mesh_cfg: float = 4.0
@@ -82,13 +101,15 @@ class ComfyUIConfig:
 class PhotoConfig:
     # Scale reconstructed nets to this longest-axis size (mm)
     target_height_mm: float = 160.0
+    # When False: only convert ComfyUI mesh to STL (no repair/orient/scale/component filter)
+    mesh_postprocess: bool = True
     # Post-process after ComfyUI reconstruction (reduces spikes/holes)
     finalize_target_faces: int = 120_000
     finalize_smooth_iters: int = 3
     finalize_min_edge_mm: float = 0.08
     finalize_close_holes: bool = True
-    # If still open after repair, voxel remesh (mm). 0 = disable.
-    finalize_voxel_mm: float = 1.0
+    # 0 = off (preserve ComfyUI mesh). Only enable for badly spiked open nets.
+    finalize_voxel_mm: float = 0.0
 
 
 @dataclass
@@ -125,6 +146,14 @@ class AppConfig:
     def comfyui_image_to_mesh_workflow_path(self) -> Path:
         raw = self.comfyui.image_to_mesh_workflow or str(ROOT / "mesh_forge" / "workflows" / "image_to_mesh.json")
         return Path(raw)
+
+    @property
+    def comfyui_text_to_front_workflow_path(self) -> Path:
+        return ROOT / "mesh_forge" / "workflows" / "text_to_front.json"
+
+    @property
+    def comfyui_zero123_orbits_workflow_path(self) -> Path:
+        return ROOT / "mesh_forge" / "workflows" / "zero123_orbits.json"
 
     def resolve(self, key: str) -> Path | None:
         value = getattr(self.paths, key, "") or ""
@@ -206,15 +235,31 @@ def save_config(config: AppConfig) -> Path:
         "multiview_to_mesh_workflow": config.comfyui.multiview_to_mesh_workflow or str(config.comfyui_multiview_to_mesh_workflow_path),
         "image_to_mesh_workflow": config.comfyui.image_to_mesh_workflow or str(config.comfyui_image_to_mesh_workflow_path),
         "quality_preset": config.comfyui.quality_preset,
+        "view_consistency": config.comfyui.view_consistency,
         "checkpoint": config.comfyui.checkpoint,
         "mesh_checkpoint": config.comfyui.mesh_checkpoint,
         "image_checkpoint": config.comfyui.image_checkpoint,
+        "zero123_checkpoint": config.comfyui.zero123_checkpoint,
         "negative_prompt": config.comfyui.negative_prompt,
         "width": config.comfyui.width,
         "height": config.comfyui.height,
         "steps": config.comfyui.steps,
         "cfg": config.comfyui.cfg,
         "view_count": config.comfyui.view_count,
+        "view_denoise": config.comfyui.view_denoise,
+        "view_denoise_turbo": config.comfyui.view_denoise_turbo,
+        "view_sampler": config.comfyui.view_sampler,
+        "view_scheduler": config.comfyui.view_scheduler,
+        "zero123_width": config.comfyui.zero123_width,
+        "zero123_height": config.comfyui.zero123_height,
+        "zero123_steps": config.comfyui.zero123_steps,
+        "zero123_cfg": config.comfyui.zero123_cfg,
+        "zero123_sampler": config.comfyui.zero123_sampler,
+        "zero123_scheduler": config.comfyui.zero123_scheduler,
+        "zero123_elevation": config.comfyui.zero123_elevation,
+        "zero123_azimuth_left": config.comfyui.zero123_azimuth_left,
+        "zero123_azimuth_back": config.comfyui.zero123_azimuth_back,
+        "zero123_azimuth_right": config.comfyui.zero123_azimuth_right,
         "mesh_resolution": config.comfyui.mesh_resolution,
         "mesh_steps": config.comfyui.mesh_steps,
         "mesh_cfg": config.comfyui.mesh_cfg,
@@ -224,6 +269,7 @@ def save_config(config: AppConfig) -> Path:
     }
     data["photo"] = {
         "target_height_mm": config.photo.target_height_mm,
+        "mesh_postprocess": bool(config.photo.mesh_postprocess),
         "finalize_target_faces": config.photo.finalize_target_faces,
         "finalize_smooth_iters": config.photo.finalize_smooth_iters,
         "finalize_min_edge_mm": config.photo.finalize_min_edge_mm,
@@ -300,6 +346,21 @@ CHECKPOINT_DOWNLOAD_URLS: dict[str, str] = {
         "https://huggingface.co/Comfy-Org/hunyuan3D_2.0_repackaged/resolve/main/split_files/"
         "hunyuan3d-dit-v2-mv_fp16.safetensors"
     ),
+    "stable_zero123.ckpt": (
+        "https://huggingface.co/stabilityai/stable-zero123/resolve/main/stable_zero123.ckpt"
+    ),
+}
+
+VIEW_CONSISTENCY_MODES: dict[str, dict[str, str]] = {
+    "img2img": {
+        "label": "img2img — быстро, без лишних моделей",
+    },
+    "zero123": {
+        "label": "Zero123 — орбита от front (~9GB при первом выборе)",
+    },
+    "off": {
+        "label": "Off — только front, single-view mesh",
+    },
 }
 
 
@@ -343,9 +404,11 @@ def missing_comfyui_checkpoints(config: AppConfig | None = None) -> list[str]:
         cfg.comfyui.mesh_checkpoint,
         cfg.comfyui.image_checkpoint,
     }
+    if (cfg.comfyui.view_consistency or "").strip().lower() == "zero123":
+        needed.add(cfg.comfyui.zero123_checkpoint or "stable_zero123.ckpt")
     missing = []
-    for name in sorted(needed):
-        if name and not (ckpt_dir / name).is_file():
+    for name in sorted(n for n in needed if n):
+        if not (ckpt_dir / name).is_file():
             missing.append(name)
     return missing
 
@@ -419,9 +482,111 @@ def download_comfyui_checkpoints(
     }
 
 
-def update_generation_settings(*, quality_preset: str) -> AppConfig:
+def apply_view_consistency(config: AppConfig, mode: str) -> AppConfig:
+    key = (mode or "img2img").strip().lower()
+    if key not in VIEW_CONSISTENCY_MODES:
+        raise ValueError(f"Unknown view_consistency: {mode}. Use img2img|zero123|off")
+    config.comfyui.view_consistency = key
+    return config
+
+
+def apply_generation_knobs(config: AppConfig, knobs: dict[str, Any]) -> AppConfig:
+    """Apply optional sampling/orbit knobs onto comfyui config."""
+    c = config.comfyui
+    mapping = {
+        "checkpoint": ("checkpoint", str),
+        "mesh_checkpoint": ("mesh_checkpoint", str),
+        "image_checkpoint": ("image_checkpoint", str),
+        "zero123_checkpoint": ("zero123_checkpoint", str),
+        "width": ("width", int),
+        "height": ("height", int),
+        "steps": ("steps", int),
+        "cfg": ("cfg", float),
+        "view_denoise": ("view_denoise", float),
+        "view_denoise_turbo": ("view_denoise_turbo", float),
+        "view_sampler": ("view_sampler", str),
+        "view_scheduler": ("view_scheduler", str),
+        "zero123_width": ("zero123_width", int),
+        "zero123_height": ("zero123_height", int),
+        "zero123_steps": ("zero123_steps", int),
+        "zero123_cfg": ("zero123_cfg", float),
+        "zero123_sampler": ("zero123_sampler", str),
+        "zero123_scheduler": ("zero123_scheduler", str),
+        "zero123_elevation": ("zero123_elevation", float),
+        "zero123_azimuth_left": ("zero123_azimuth_left", float),
+        "zero123_azimuth_back": ("zero123_azimuth_back", float),
+        "zero123_azimuth_right": ("zero123_azimuth_right", float),
+        "mesh_steps": ("mesh_steps", int),
+        "mesh_cfg": ("mesh_cfg", float),
+        "mesh_guidance": ("mesh_guidance", float),
+        "mesh_resolution": ("mesh_resolution", int),
+        "mesh_octree_resolution": ("mesh_octree_resolution", int),
+        "mesh_num_chunks": ("mesh_num_chunks", int),
+    }
+    for key, (attr, caster) in mapping.items():
+        if key not in knobs or knobs[key] is None:
+            continue
+        raw = knobs[key]
+        if caster is str:
+            value = str(raw).strip()
+            if not value:
+                continue
+        else:
+            value = caster(raw)
+        setattr(c, attr, value)
+    return config
+
+
+def _knobs_from_config(cfg: AppConfig) -> dict[str, Any]:
+    c = cfg.comfyui
+    return {
+        "checkpoint": c.checkpoint,
+        "mesh_checkpoint": c.mesh_checkpoint,
+        "image_checkpoint": c.image_checkpoint,
+        "zero123_checkpoint": c.zero123_checkpoint or "stable_zero123.ckpt",
+        "width": int(c.width),
+        "height": int(c.height),
+        "steps": int(c.steps),
+        "cfg": float(c.cfg),
+        "view_denoise": float(c.view_denoise),
+        "view_denoise_turbo": float(c.view_denoise_turbo),
+        "view_sampler": c.view_sampler or "euler",
+        "view_scheduler": c.view_scheduler or "sgm_uniform",
+        "zero123_width": int(c.zero123_width),
+        "zero123_height": int(c.zero123_height),
+        "zero123_steps": int(c.zero123_steps),
+        "zero123_cfg": float(c.zero123_cfg),
+        "zero123_sampler": c.zero123_sampler or "euler",
+        "zero123_scheduler": c.zero123_scheduler or "normal",
+        "zero123_elevation": float(c.zero123_elevation),
+        "zero123_azimuth_left": float(c.zero123_azimuth_left),
+        "zero123_azimuth_back": float(c.zero123_azimuth_back),
+        "zero123_azimuth_right": float(c.zero123_azimuth_right),
+        "mesh_steps": int(c.mesh_steps),
+        "mesh_cfg": float(c.mesh_cfg),
+        "mesh_guidance": float(c.mesh_guidance),
+        "mesh_resolution": int(c.mesh_resolution),
+        "mesh_octree_resolution": int(c.mesh_octree_resolution),
+        "mesh_num_chunks": int(c.mesh_num_chunks),
+    }
+
+
+def update_generation_settings(
+    *,
+    quality_preset: str,
+    view_consistency: str | None = None,
+    mesh_postprocess: bool | None = None,
+    knobs: dict[str, Any] | None = None,
+) -> AppConfig:
     config = load_config()
     apply_quality_preset(config, quality_preset)
+    if view_consistency is not None:
+        apply_view_consistency(config, view_consistency)
+    if mesh_postprocess is not None:
+        config.photo.mesh_postprocess = bool(mesh_postprocess)
+    if knobs:
+        # Knobs applied AFTER preset so manual overrides win.
+        apply_generation_knobs(config, knobs)
     save_config(config)
     return config
 
@@ -435,28 +600,45 @@ def generation_settings_payload(
     preset = (cfg.comfyui.quality_preset or "draft").lower()
     if preset not in QUALITY_PRESETS:
         preset = "draft"
+    view_mode = (cfg.comfyui.view_consistency or "img2img").lower()
+    if view_mode not in VIEW_CONSISTENCY_MODES:
+        view_mode = "img2img"
+    knobs = _knobs_from_config(cfg)
     payload = {
         "quality_preset": preset,
+        "view_consistency": view_mode,
+        "mesh_postprocess": bool(cfg.photo.mesh_postprocess),
+        "view_modes": {
+            key: {"label": val["label"]} for key, val in VIEW_CONSISTENCY_MODES.items()
+        },
         "presets": {
             key: {
                 "label": val["label"],
                 "checkpoint": val["checkpoint"],
                 "mesh_checkpoint": val["mesh_checkpoint"],
+                "image_checkpoint": val.get("image_checkpoint") or val["mesh_checkpoint"],
                 "steps": val["steps"],
                 "cfg": val["cfg"],
                 "mesh_steps": val["mesh_steps"],
+                "mesh_cfg": val["mesh_cfg"],
+                "mesh_guidance": val["mesh_guidance"],
             }
             for key, val in QUALITY_PRESETS.items()
         },
+        "knobs": knobs,
         "active": {
             "checkpoint": cfg.comfyui.checkpoint,
             "mesh_checkpoint": cfg.comfyui.mesh_checkpoint,
             "image_checkpoint": cfg.comfyui.image_checkpoint,
+            "zero123_checkpoint": cfg.comfyui.zero123_checkpoint,
+            "view_consistency": view_mode,
+            "mesh_postprocess": bool(cfg.photo.mesh_postprocess),
             "steps": cfg.comfyui.steps,
             "cfg": cfg.comfyui.cfg,
             "mesh_steps": cfg.comfyui.mesh_steps,
             "mesh_cfg": cfg.comfyui.mesh_cfg,
             "mesh_guidance": cfg.comfyui.mesh_guidance,
+            "knobs": knobs,
         },
         "missing_checkpoints": missing_comfyui_checkpoints(cfg),
         "downloaded_checkpoints": list((download_report or {}).get("downloaded") or []),

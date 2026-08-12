@@ -24,10 +24,14 @@ VIEW_LABELS = ("front", "left", "back", "right")
 
 @dataclass
 class WorkflowPack:
+    text_to_front: Path
     text_to_multiview: Path
+    zero123_orbits: Path
     multiview_to_mesh: Path
     image_to_mesh: Path
+    front_output: str
     view_outputs: dict[str, str]
+    orbit_outputs: dict[str, str]
     mesh_output: str
     image_mesh_output: str
 
@@ -37,6 +41,10 @@ class ComfyUiClient:
         self.config = load_config()
         self.base_url = self.config.comfyui.base_url.rstrip("/")
         self._scheduler = get_gpu_scheduler()
+
+    def _view_consistency(self) -> str:
+        mode = (self.config.comfyui.view_consistency or "img2img").strip().lower()
+        return mode if mode in {"img2img", "zero123", "off"} else "img2img"
 
     def health_check(self) -> bool:
         if not self.config.comfyui.enabled:
@@ -49,23 +57,47 @@ class ComfyUiClient:
             return False
 
     def generate_views(self, prompt: str, work_dir: Path, *, count: int = 4, project_id: str | None = None) -> ImageSet:
+        """Generate views according to comfyui.view_consistency."""
+        self.config = load_config()
         if not self.config.comfyui.enabled:
             raise RuntimeError("ComfyUI is disabled in config.yaml")
 
         work_dir.mkdir(parents=True, exist_ok=True)
         pack = self._load_workflow_pack()
         run_id = uuid.uuid4().hex[:8]
-        workflow = self._load_text_to_multiview_workflow(pack.text_to_multiview, prompt=prompt, count=count, run_id=run_id)
+        mode = self._view_consistency()
 
         try:
             with self._scheduler.acquire("ComfyUI views", project_id=project_id):
-                with httpx.Client(timeout=60.0) as client:
-                    history = self._submit_workflow(client, workflow)
-                    return self._collect_named_images(
+                with httpx.Client(timeout=120.0) as client:
+                    if mode == "img2img":
+                        workflow = self._load_text_to_multiview_workflow(
+                            pack.text_to_multiview, prompt=prompt, count=max(count, 4), run_id=run_id
+                        )
+                        history = self._submit_workflow(client, workflow)
+                        views = self._collect_named_images(
+                            client,
+                            history=history,
+                            output_dir=work_dir / "views",
+                            output_nodes=pack.view_outputs,
+                        )
+                        if len(views.items) < 4:
+                            raise RuntimeError("ComfyUI produced incomplete multiview output")
+                        return views
+
+                    # front first (off + zero123)
+                    front_wf = self._load_text_to_front_workflow(pack.text_to_front, prompt=prompt, run_id=run_id)
+                    front_history = self._submit_workflow(client, front_wf)
+                    front_views = self._collect_front_image(
                         client,
-                        history=history,
+                        history=front_history,
                         output_dir=work_dir / "views",
-                        output_nodes=pack.view_outputs,
+                        output_node=pack.front_output,
+                    )
+                    if mode == "off":
+                        return front_views
+                    return self._generate_zero123_orbits(
+                        client, pack=pack, front_views=front_views, work_dir=work_dir, run_id=run_id
                     )
         except httpx.HTTPStatusError as exc:
             raise RuntimeError(self._format_prompt_error(exc)) from exc
@@ -76,47 +108,82 @@ class ComfyUiClient:
             ) from exc
 
     def run_text_to_mesh(self, prompt: str, work_dir: Path, *, project_id: str, count: int = 4) -> TextToMeshResult:
+        """Text → views (mode-dependent) → Hunyuan mesh."""
+        self.config = load_config()
         if not self.config.comfyui.enabled:
             raise RuntimeError("ComfyUI is disabled in config.yaml")
 
         work_dir.mkdir(parents=True, exist_ok=True)
         pack = self._load_workflow_pack()
         run_id = uuid.uuid4().hex[:8]
+        mode = self._view_consistency()
 
         try:
             with self._scheduler.acquire("ComfyUI text→mesh", project_id=project_id):
-                with httpx.Client(timeout=120.0) as client:
+                with httpx.Client(timeout=180.0) as client:
                     prog.update(project_id, 14, "concept")
-                    view_workflow = self._load_text_to_multiview_workflow(
-                        pack.text_to_multiview,
-                        prompt=prompt,
-                        count=count,
-                        run_id=run_id,
-                    )
-                    view_history = self._submit_workflow(client, view_workflow)
-                    prog.update(project_id, 34, "views")
-                    views = self._collect_named_images(
-                        client,
-                        history=view_history,
-                        output_dir=work_dir / "views",
-                        output_nodes=pack.view_outputs,
-                    )
-                    if len(views.items) < 4:
-                        raise RuntimeError("ComfyUI produced incomplete multiview output")
+                    if mode == "img2img":
+                        view_workflow = self._load_text_to_multiview_workflow(
+                            pack.text_to_multiview,
+                            prompt=prompt,
+                            count=max(count, 4),
+                            run_id=run_id,
+                        )
+                        view_history = self._submit_workflow(client, view_workflow)
+                        prog.update(project_id, 34, "views")
+                        views = self._collect_named_images(
+                            client,
+                            history=view_history,
+                            output_dir=work_dir / "views",
+                            output_nodes=pack.view_outputs,
+                        )
+                        if len(views.items) < 4:
+                            raise RuntimeError("ComfyUI produced incomplete multiview output")
+                    else:
+                        front_wf = self._load_text_to_front_workflow(
+                            pack.text_to_front, prompt=prompt, run_id=run_id
+                        )
+                        front_history = self._submit_workflow(client, front_wf)
+                        prog.update(project_id, 34, "views")
+                        views = self._collect_front_image(
+                            client,
+                            history=front_history,
+                            output_dir=work_dir / "views",
+                            output_node=pack.front_output,
+                        )
+                        if mode == "zero123":
+                            views = self._generate_zero123_orbits(
+                                client, pack=pack, front_views=views, work_dir=work_dir, run_id=run_id
+                            )
 
-                    uploaded = self._upload_views(client, views, subfolder=f"meshforge/{run_id}")
                     prog.update(project_id, 62, "mesh")
-                    mesh_workflow = self._load_multiview_to_mesh_workflow(
-                        pack.multiview_to_mesh,
-                        uploaded_views=uploaded,
-                        run_id=run_id,
-                    )
+                    if mode == "off" or len(views.items) == 1:
+                        front = views.get("front")
+                        if front is None:
+                            raise RuntimeError("Front view missing after generation")
+                        uploaded_front = self._upload_input_image(
+                            client, front.path, subfolder=f"meshforge/{run_id}"
+                        )
+                        mesh_workflow = self._load_image_to_mesh_workflow(
+                            pack.image_to_mesh,
+                            uploaded_front=uploaded_front,
+                            run_id=run_id,
+                        )
+                        output_node = pack.image_mesh_output
+                    else:
+                        uploaded = self._upload_views(client, views, subfolder=f"meshforge/{run_id}")
+                        mesh_workflow = self._load_multiview_to_mesh_workflow(
+                            pack.multiview_to_mesh,
+                            uploaded_views=uploaded,
+                            run_id=run_id,
+                        )
+                        output_node = pack.mesh_output
                     mesh_history = self._submit_workflow(client, mesh_workflow)
                     mesh = self._collect_mesh_artifact(
                         client,
                         history=mesh_history,
                         output_dir=work_dir / "mesh",
-                        output_node=pack.mesh_output,
+                        output_node=output_node,
                     )
         except httpx.HTTPStatusError as exc:
             raise RuntimeError(self._format_prompt_error(exc)) from exc
@@ -127,6 +194,52 @@ class ComfyUiClient:
             ) from exc
 
         return TextToMeshResult(views=views, mesh=mesh)
+
+    def _generate_zero123_orbits(
+        self,
+        client: httpx.Client,
+        *,
+        pack: WorkflowPack,
+        front_views: ImageSet,
+        work_dir: Path,
+        run_id: str,
+    ) -> ImageSet:
+        front = front_views.get("front")
+        if front is None:
+            raise RuntimeError("Front view required for Zero123 orbits")
+        ckpt = self.config.comfyui.zero123_checkpoint or "stable_zero123.ckpt"
+        ckpt_dir = None
+        try:
+            from mesh_forge.config import comfyui_checkpoints_dir
+
+            ckpt_dir = comfyui_checkpoints_dir(self.config)
+        except Exception:
+            pass
+        if ckpt_dir is not None and not (ckpt_dir / ckpt).is_file():
+            raise RuntimeError(
+                f"Zero123 checkpoint missing: {ckpt}. "
+                "Выберите режим Zero123 в ⚙ Генерация и сохраните (скачается автоматически), "
+                "либо положите файл в ComfyUI/models/checkpoints."
+            )
+        uploaded_front = self._upload_input_image(client, front.path, subfolder=f"meshforge/{run_id}")
+        orbit_wf = self._load_zero123_orbits_workflow(
+            pack.zero123_orbits, uploaded_front=uploaded_front, run_id=run_id
+        )
+        orbit_history = self._submit_workflow(client, orbit_wf)
+        orbits = self._collect_named_images(
+            client,
+            history=orbit_history,
+            output_dir=work_dir / "views",
+            output_nodes=pack.orbit_outputs,
+        )
+        # Merge front + orbits into a full 4-view set.
+        items = list(front_views.items)
+        for label in ("left", "back", "right"):
+            art = orbits.get(label)
+            if art is None:
+                raise RuntimeError(f"Zero123 did not produce {label} view")
+            items.append(art)
+        return ImageSet(items=items)
 
     def run_images_to_mesh(self, images: ImageSet, work_dir: Path, *, project_id: str) -> MeshArtifact:
         if not self.config.comfyui.enabled:
@@ -147,20 +260,31 @@ class ComfyUiClient:
                         label: self._upload_input_image(client, path, subfolder=f"meshforge/{run_id}")
                         for label, path in assigned.items()
                     }
-                    # One checkpoint for all photo paths: missing views are filled from front
-                    # (same Hunyuan MV turbo used by text→multiview→mesh).
-                    filled = self._fill_missing_views(uploaded)
-                    workflow = self._load_multiview_to_mesh_workflow(
-                        pack.multiview_to_mesh,
-                        uploaded_views=filled,
-                        run_id=run_id,
-                    )
+                    # Prefer single-view Hunyuan when we only have one reference —
+                    # stuffing the same front into MV slots hurts consistency.
+                    unique_paths = {p.resolve() for p in assigned.values()}
+                    if len(assigned) == 1 or len(unique_paths) == 1:
+                        front_key = "front" if "front" in uploaded else next(iter(uploaded))
+                        workflow = self._load_image_to_mesh_workflow(
+                            pack.image_to_mesh,
+                            uploaded_front=uploaded[front_key],
+                            run_id=run_id,
+                        )
+                        output_node = pack.image_mesh_output
+                    else:
+                        filled = self._fill_missing_views(uploaded)
+                        workflow = self._load_multiview_to_mesh_workflow(
+                            pack.multiview_to_mesh,
+                            uploaded_views=filled,
+                            run_id=run_id,
+                        )
+                        output_node = pack.mesh_output
                     history = self._submit_workflow(client, workflow)
                     return self._collect_mesh_artifact(
                         client,
                         history=history,
                         output_dir=work_dir / "mesh",
-                        output_node=pack.mesh_output,
+                        output_node=output_node,
                     )
         except httpx.HTTPStatusError as exc:
             raise RuntimeError(self._format_prompt_error(exc)) from exc
@@ -193,53 +317,138 @@ class ComfyUiClient:
 
     def _load_workflow_pack(self) -> WorkflowPack:
         config_path = self.config.comfyui_workflow_path
+        workflows_dir = Path(__file__).resolve().parent.parent / "workflows"
+        default_text_to_front = workflows_dir / "text_to_front.json"
+        default_zero123 = workflows_dir / "zero123_orbits.json"
+        orbit_defaults = {"left": "22", "back": "23", "right": "24"}
         if config_path.is_file():
             data = json.loads(config_path.read_text(encoding="utf-8"))
             if "stages" in data:
                 base_dir = config_path.parent
                 stages = data.get("stages") or {}
                 outputs = data.get("outputs") or {}
+                front_path = stages.get("text_to_front") or "text_to_front.json"
+                zero_path = stages.get("zero123_orbits") or "zero123_orbits.json"
+                orbit_outputs = {
+                    str(k): str(v)
+                    for k, v in (outputs.get("orbits") or orbit_defaults).items()
+                }
                 return WorkflowPack(
+                    text_to_front=(base_dir / front_path).resolve(),
                     text_to_multiview=(base_dir / stages["text_to_multiview"]).resolve(),
+                    zero123_orbits=(base_dir / zero_path).resolve(),
                     multiview_to_mesh=(base_dir / stages["multiview_to_mesh"]).resolve(),
                     image_to_mesh=(base_dir / stages.get("image_to_mesh", "image_to_mesh.json")).resolve(),
+                    front_output=str(outputs.get("front") or "7"),
                     view_outputs={str(k): str(v) for k, v in (outputs.get("views") or {}).items()},
+                    orbit_outputs=orbit_outputs,
                     mesh_output=str(outputs.get("mesh") or ""),
                     image_mesh_output=str(outputs.get("image_mesh") or "11"),
                 )
         return WorkflowPack(
+            text_to_front=default_text_to_front,
             text_to_multiview=self.config.comfyui_text_to_multiview_workflow_path,
+            zero123_orbits=default_zero123,
             multiview_to_mesh=self.config.comfyui_multiview_to_mesh_workflow_path,
             image_to_mesh=self.config.comfyui_image_to_mesh_workflow_path,
+            front_output="7",
             view_outputs={"front": "21", "left": "22", "back": "23", "right": "24"},
+            orbit_outputs=orbit_defaults,
             mesh_output="17",
             image_mesh_output="11",
         )
+
+    def _load_text_to_front_workflow(self, workflow_path: Path, *, prompt: str, run_id: str) -> dict[str, Any]:
+        workflow = self._read_workflow(workflow_path)
+        seed = random.randint(1, 2**31 - 1)
+        subject = self._normalize_subject_prompt(prompt)
+        negative = self._build_view_negative(self.config.comfyui.negative_prompt)
+        c = self.config.comfyui
+        replacements: dict[str, Any] = {
+            "__CHECKPOINT__": c.checkpoint,
+            "__PROMPT__": self._build_view_prompt(subject, "front"),
+            "__NEGATIVE_PROMPT__": negative,
+            "__WIDTH__": c.width,
+            "__HEIGHT__": c.height,
+            "__STEPS__": c.steps,
+            "__CFG__": c.cfg,
+            "__SAMPLER__": c.view_sampler or "euler",
+            "__SCHEDULER__": c.view_scheduler or "sgm_uniform",
+            "__SEED__": seed,
+            "__OUTPUT_PREFIX__": f"meshforge/{run_id}/front",
+        }
+        logger.info("text→front seed=%s subject=%s", seed, subject[:120])
+        return self._render_workflow(workflow, replacements)
 
     def _load_text_to_multiview_workflow(self, workflow_path: Path, *, prompt: str, count: int, run_id: str) -> dict[str, Any]:
         if count < 4:
             raise ValueError("Text-to-mesh workflow requires 4 named views")
         workflow = self._read_workflow(workflow_path)
-        negative = self.config.comfyui.negative_prompt
+        # Front is txt2img; left/back/right are img2img from that front (shared identity).
         base_seed = random.randint(1, 2**31 - 1)
+        c = self.config.comfyui
+        ckpt = (c.checkpoint or "").lower()
+        view_denoise = float(c.view_denoise_turbo if "turbo" in ckpt else c.view_denoise)
+        negative = self._build_view_negative(c.negative_prompt)
         replacements: dict[str, Any] = {
-            "__CHECKPOINT__": self.config.comfyui.checkpoint,
+            "__CHECKPOINT__": c.checkpoint,
             "__NEGATIVE_PROMPT__": negative,
-            "__WIDTH__": self.config.comfyui.width,
-            "__HEIGHT__": self.config.comfyui.height,
-            "__STEPS__": self.config.comfyui.steps,
-            "__CFG__": self.config.comfyui.cfg,
+            "__WIDTH__": c.width,
+            "__HEIGHT__": c.height,
+            "__STEPS__": c.steps,
+            "__CFG__": c.cfg,
+            "__SAMPLER__": c.view_sampler or "euler",
+            "__SCHEDULER__": c.view_scheduler or "sgm_uniform",
+            "__VIEW_DENOISE__": view_denoise,
             "__SEED_FRONT__": base_seed,
-            "__SEED_LEFT__": base_seed + 11,
-            "__SEED_BACK__": base_seed + 23,
-            "__SEED_RIGHT__": base_seed + 37,
+            "__SEED_LEFT__": base_seed,
+            "__SEED_BACK__": base_seed,
+            "__SEED_RIGHT__": base_seed,
             "__OUTPUT_FRONT__": f"meshforge/{run_id}/front",
             "__OUTPUT_LEFT__": f"meshforge/{run_id}/left",
             "__OUTPUT_BACK__": f"meshforge/{run_id}/back",
             "__OUTPUT_RIGHT__": f"meshforge/{run_id}/right",
         }
+        subject = self._normalize_subject_prompt(prompt)
         for label in VIEW_LABELS:
-            replacements[f"__PROMPT_{label.upper()}__"] = self._build_view_prompt(prompt, label)
+            replacements[f"__PROMPT_{label.upper()}__"] = self._build_view_prompt(subject, label)
+        logger.info(
+            "text→multiview seed=%s denoise=%.2f subject=%s",
+            base_seed,
+            view_denoise,
+            subject[:120],
+        )
+        return self._render_workflow(workflow, replacements)
+
+    def _load_zero123_orbits_workflow(
+        self,
+        workflow_path: Path,
+        *,
+        uploaded_front: str,
+        run_id: str,
+    ) -> dict[str, Any]:
+        workflow = self._read_workflow(workflow_path)
+        seed = random.randint(1, 2**31 - 1)
+        c = self.config.comfyui
+        replacements: dict[str, Any] = {
+            "__ZERO123_CHECKPOINT__": c.zero123_checkpoint or "stable_zero123.ckpt",
+            "__FRONT_IMAGE__": uploaded_front,
+            "__ZERO123_WIDTH__": int(c.zero123_width),
+            "__ZERO123_HEIGHT__": int(c.zero123_height),
+            "__ZERO123_STEPS__": int(c.zero123_steps),
+            "__ZERO123_CFG__": float(c.zero123_cfg),
+            "__ZERO123_SAMPLER__": c.zero123_sampler or "euler",
+            "__ZERO123_SCHEDULER__": c.zero123_scheduler or "normal",
+            "__ZERO123_ELEVATION__": float(c.zero123_elevation),
+            "__AZIMUTH_LEFT__": float(c.zero123_azimuth_left),
+            "__AZIMUTH_BACK__": float(c.zero123_azimuth_back),
+            "__AZIMUTH_RIGHT__": float(c.zero123_azimuth_right),
+            "__SEED__": seed,
+            "__OUTPUT_LEFT__": f"meshforge/{run_id}/left",
+            "__OUTPUT_BACK__": f"meshforge/{run_id}/back",
+            "__OUTPUT_RIGHT__": f"meshforge/{run_id}/right",
+        }
+        logger.info("zero123 orbits seed=%s front=%s", seed, uploaded_front)
         return self._render_workflow(workflow, replacements)
 
     def _load_multiview_to_mesh_workflow(
@@ -328,18 +537,74 @@ class ComfyUiClient:
                     inputs[key] = replacements[value]
         return workflow
 
+    def _normalize_subject_prompt(self, prompt: str) -> str:
+        text = (prompt or "").strip()
+        # Strip accidental "front view:" prefixes from chat drafts.
+        for prefix in ("front:", "left:", "back:", "right:", "view:"):
+            if text.lower().startswith(prefix):
+                text = text[len(prefix):].strip()
+        return text
+
+    def _build_view_negative(self, base_negative: str) -> str:
+        extras = (
+            "photorealistic fur, realistic photo, different animal, "
+            "inconsistent character, collage, split screen, multiple cats, extra limbs, "
+            "scene background, furniture, hands, people, text, watermark, frame, cropped, "
+            "side profile, three-quarter view, looking sideways, morphing identity"
+        )
+        base = (base_negative or "").strip().rstrip(",")
+        return f"{base}, {extras}" if base else extras
+
     def _build_view_prompt(self, prompt: str, label: str) -> str:
         view_text = {
-            "front": "front orthographic product shot",
-            "left": "left orthographic side view, 90 degrees from front",
-            "back": "back orthographic view, 180 degrees from front",
-            "right": "right orthographic side view, 90 degrees from front",
+            "front": (
+                "STRICT orthographic FRONT elevation, camera on the turntable axis, "
+                "both ears and both eyes equally visible, nose pointing straight at camera, "
+                "NOT a side profile, NOT three-quarter view"
+            ),
+            "left": (
+                "SAME identical figurine, only camera moved: orthographic LEFT profile, "
+                "90 degree yaw turntable orbit from front, subject faces right of frame, "
+                "keep the same pose, proportions, and expression"
+            ),
+            "back": (
+                "SAME identical figurine, only camera moved: orthographic BACK view, "
+                "180 degree yaw turntable orbit from front, "
+                "keep the same pose, proportions, and expression"
+            ),
+            "right": (
+                "SAME identical figurine, only camera moved: orthographic RIGHT profile, "
+                "270 degree yaw turntable orbit from front, subject faces left of frame, "
+                "keep the same pose, proportions, and expression"
+            ),
         }[label]
+        subject = prompt.strip()
         return (
-            "single object, centered, isolated on white background, clean studio lighting, "
-            "consistent proportions, no hands, no scene, no extra objects, "
-            f"{view_text}, {prompt.strip()}"
+            "product photo of ONE matte white clay 3D-printable tabletop figurine, "
+            "smooth sealed surface, no fur strands, no photoreal materials, "
+            "single centered object, neutral gray studio backdrop, soft even lighting, "
+            "clean silhouette for 3D reconstruction, "
+            f"{view_text}. Subject: {subject}"
         )
+
+    def _collect_front_image(
+        self,
+        client: httpx.Client,
+        *,
+        history: dict[str, Any],
+        output_dir: Path,
+        output_node: str,
+    ) -> ImageSet:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        outputs = history.get("outputs", {})
+        node_data = outputs.get(str(output_node)) or {}
+        record = self._first_output_record(node_data)
+        if not record:
+            raise RuntimeError("ComfyUI produced no front view image")
+        suffix = Path(record["filename"]).suffix.lower() or ".png"
+        dest = output_dir / f"front{suffix}"
+        self._download_output(client, record, dest)
+        return ImageSet(items=[ImageArtifact(path=dest, label="front", role="view", stage="views")])
 
     def _collect_named_images(
         self,

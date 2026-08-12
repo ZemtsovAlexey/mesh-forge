@@ -149,21 +149,46 @@ class PromptChatService:
 
     def _handle_create(self, manifest: ProjectManifest, state: ChatState) -> dict[str, Any]:
         history = [{"role": m.role, "content": m.content} for m in state.messages if m.role in {"user", "assistant"}]
+        clarifying_rounds = sum(1 for m in state.messages if m.role == "assistant")
+        force_draft = clarifying_rounds >= 2 or _user_wants_to_stop_clarifying(state.messages)
+
         result = self.llm.clarify_or_enhance(history)
         state.intent = str(result.get("intent") or "create")
-        state.assistant_message = str(result.get("assistant_message") or "").strip()
         state.questions = [str(q).strip() for q in (result.get("questions") or []) if str(q).strip()][:3]
         state.draft_prompt_en = str(result.get("draft_prompt_en") or "").strip()
         state.edit_brief_en = ""
         state.ready = bool(result.get("ready")) and bool(state.draft_prompt_en)
+
+        if force_draft and not state.ready:
+            # Break empty clarify loops: synthesize a usable EN draft from user text.
+            state.draft_prompt_en = _fallback_draft_en(state.user_prompt or _last_user_text(state.messages))
+            state.questions = []
+            state.ready = bool(state.draft_prompt_en)
+            state.assistant_message = (
+                "Ок, собираю промпт из того что уже есть — можно запускать. "
+                "Если нужно иначе, напишите правку после генерации."
+            )
+        else:
+            state.assistant_message = _format_assistant_with_questions(
+                str(result.get("assistant_message") or "").strip(),
+                state.questions,
+                ready=state.ready,
+                draft=state.draft_prompt_en,
+            )
+            if not state.ready and not state.questions:
+                state.questions = [
+                    "Какая поза? (сидит / стоит / динамичная)",
+                    "Стиль: matte clay фигурка или другой?",
+                    "Какие детали обязательны?",
+                ]
+                state.assistant_message = _format_assistant_with_questions(
+                    "Уточните, пожалуйста:",
+                    state.questions,
+                    ready=False,
+                    draft="",
+                )
+
         state.status = "ready" if state.ready else "clarifying"
-        if not state.assistant_message:
-            if state.questions:
-                state.assistant_message = "Уточните, пожалуйста:\n- " + "\n- ".join(state.questions)
-            elif state.draft_prompt_en:
-                state.assistant_message = "Подготовил английский промпт для ComfyUI. Можно запускать."
-            else:
-                state.assistant_message = "Нужно больше деталей об объекте."
         state.messages.append(ChatMessage(role="assistant", content=state.assistant_message))
         return self.save(manifest, state).to_dict()
 
@@ -198,16 +223,17 @@ class PromptChatService:
         state.draft_prompt_en = state.edit_brief_en
         state.ready = bool(result.get("ready")) and bool(state.edit_brief_en)
         state.status = "ready" if state.ready else "clarifying"
-        if not state.assistant_message:
-            if state.questions:
-                state.assistant_message = "Уточните правку:\n- " + "\n- ".join(state.questions)
-            elif state.edit_brief_en:
-                state.assistant_message = (
-                    "Понял смысловую правку. Это будет перегенерация через ComfyUI "
-                    "(не фильтры). Можно запускать."
-                )
-            else:
-                state.assistant_message = "Не понял, что именно исправить в модели."
+        state.assistant_message = _format_assistant_with_questions(
+            state.assistant_message,
+            state.questions,
+            ready=state.ready,
+            draft=state.edit_brief_en,
+            ready_fallback=(
+                "Понял смысловую правку. Это будет перегенерация через ComfyUI "
+                "(не фильтры). Можно запускать."
+            ),
+            empty_fallback="Не понял, что именно исправить в модели.",
+        )
         state.messages.append(ChatMessage(role="assistant", content=state.assistant_message))
         return self.save(manifest, state).to_dict()
 
@@ -224,3 +250,71 @@ def _looks_like_recreate(text: str) -> bool:
         "regenerate from scratch",
     )
     return any(m in lowered for m in markers)
+
+
+def _last_user_text(messages: list[ChatMessage]) -> str:
+    for msg in reversed(messages):
+        if msg.role == "user" and msg.content.strip():
+            return msg.content.strip()
+    return ""
+
+
+def _user_wants_to_stop_clarifying(messages: list[ChatMessage]) -> bool:
+    text = _last_user_text(messages).lower()
+    markers = (
+        "ты ничего не спросил",
+        "каких",
+        "просто сделай",
+        "без вопросов",
+        "давай так",
+        "хватает",
+        "достаточно",
+        "генерируй",
+        "запускай",
+        "just generate",
+        "no questions",
+        "go ahead",
+    )
+    return any(m in text for m in markers)
+
+
+def _fallback_draft_en(user_text: str) -> str:
+    subject = (user_text or "a small figurine").strip()
+    subject = subject.split("\n")[0].strip()[:200]
+    # Keep faithful and short; ComfyUI wrapper adds clay/studio style.
+    return subject if _looks_english(subject) else f"A desktop figurine: {subject}."
+
+
+def _looks_english(text: str) -> bool:
+    letters = [c for c in text if c.isalpha()]
+    if not letters:
+        return False
+    ascii_letters = sum(1 for c in letters if ord(c) < 128)
+    return ascii_letters / len(letters) > 0.85
+
+
+def _format_assistant_with_questions(
+    message: str,
+    questions: list[str],
+    *,
+    ready: bool,
+    draft: str,
+    ready_fallback: str = "Подготовил английский промпт для ComfyUI. Можно запускать.",
+    empty_fallback: str = "Нужно больше деталей об объекте.",
+) -> str:
+    msg = (message or "").strip()
+    if ready:
+        return msg or ready_fallback
+    qs = [q for q in questions if q.strip()]
+    if qs:
+        block = "\n".join(f"- {q}" for q in qs)
+        # Avoid "here are questions" with nothing after — always attach the list.
+        if all(q in msg for q in qs):
+            return msg
+        if not msg or msg.endswith(":") or "вопрос" in msg.lower() or "question" in msg.lower():
+            base = msg.rstrip() or "Уточните, пожалуйста:"
+            return f"{base}\n{block}"
+        return f"{msg}\n{block}"
+    if draft:
+        return msg or ready_fallback
+    return msg or empty_fallback

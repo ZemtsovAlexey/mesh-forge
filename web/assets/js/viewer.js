@@ -60,9 +60,10 @@ export class MeshViewer {
 
     this.material = new THREE.MeshStandardMaterial({
       color: 0x3dd6c6,
-      metalness: 0.15,
-      roughness: 0.45,
+      metalness: 0.12,
+      roughness: 0.5,
       flatShading: false,
+      side: THREE.DoubleSide,
     });
 
     this._boundResize = () => this.resize();
@@ -183,8 +184,15 @@ export class MeshViewer {
           url,
           (geometry) => {
             geometry.computeVertexNormals();
-            const mesh = new THREE.Mesh(geometry, this.material);
-            onLoaded(mesh);
+            geometry.computeBoundingSphere();
+            const mesh = new THREE.Mesh(geometry, this.material.clone());
+            mesh.material.side = THREE.DoubleSide;
+            mesh.material.wireframe = this.wireframe;
+            mesh.castShadow = true;
+            mesh.receiveShadow = true;
+            this.meshGroup.add(mesh);
+            this._fitCamera(mesh);
+            resolve(mesh);
           },
           undefined,
           reject,

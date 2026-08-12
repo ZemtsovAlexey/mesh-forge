@@ -10,11 +10,13 @@ from api.deps import get_orchestrator, load_project
 from api.schemas import (
     ChatStateInfo,
     CreateProjectRequest,
+    DuplicateProjectRequest,
     ExportInfo,
     OperationResult,
     ProgressInfo,
     ProjectDetail,
     ProjectSummary,
+    RenameProjectRequest,
 )
 from api.services import (
     build_job,
@@ -24,10 +26,11 @@ from api.services import (
     list_project_summaries,
     post_project_chat_message,
     project_detail,
+    regenerate_project,
     run_generation_job,
     save_upload_to_tmp,
 )
-from mesh_forge.manifest import create_project
+from mesh_forge.manifest import create_project, delete_project, duplicate_project, rename_project
 from mesh_forge import progress as prog
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -42,6 +45,37 @@ def get_projects() -> list[ProjectSummary]:
 def post_project(body: CreateProjectRequest) -> ProjectDetail:
     manifest = create_project(body.name.strip())
     return project_detail(manifest)
+
+
+@router.patch("/{project_id}", response_model=ProjectDetail)
+def patch_project(project_id: str, body: RenameProjectRequest) -> ProjectDetail:
+    try:
+        manifest = load_project(project_id)
+        return project_detail(rename_project(manifest, body.name))
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.post("/{project_id}/duplicate", response_model=ProjectDetail, status_code=201)
+def post_duplicate_project(project_id: str, body: DuplicateProjectRequest | None = None) -> ProjectDetail:
+    try:
+        manifest = load_project(project_id)
+        name = body.name if body else None
+        return project_detail(duplicate_project(manifest, name=name))
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+
+@router.delete("/{project_id}", status_code=204)
+def remove_project(project_id: str) -> None:
+    try:
+        delete_project(project_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
 
 
 @router.get("/{project_id}", response_model=ProjectDetail)
@@ -63,6 +97,31 @@ def get_project_mesh(project_id: str):
         raise HTTPException(404, "No mesh for this project")
     media = "model/stl" if mesh.suffix.lower() == ".stl" else "application/octet-stream"
     return FileResponse(mesh, media_type=media, filename=mesh.name)
+
+
+@router.get("/{project_id}/artifacts/{version}/{filename}")
+def get_project_artifact(project_id: str, version: int, filename: str):
+    try:
+        manifest = load_project(project_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    safe_name = Path(filename).name
+    if not safe_name or safe_name != filename or ".." in filename:
+        raise HTTPException(400, "Invalid artifact name")
+    path = (manifest.root / "models" / f"v{version}" / "artifacts" / safe_name).resolve()
+    root = (manifest.root / "models").resolve()
+    if not str(path).startswith(str(root)) or not path.is_file():
+        raise HTTPException(404, "Artifact not found")
+    suffix = path.suffix.lower()
+    media = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".stl": "model/stl",
+        ".glb": "model/gltf-binary",
+    }.get(suffix, "application/octet-stream")
+    return FileResponse(path, media_type=media, filename=path.name)
 
 
 @router.get("/{project_id}/export", response_model=ExportInfo)
@@ -189,6 +248,30 @@ async def post_chat_confirm(
             )
 
         return await run_in_threadpool(_confirm)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+
+@router.post("/{project_id}/regenerate", response_model=OperationResult)
+async def post_regenerate(
+    project_id: str,
+    solidify_mm: float = Form(0.0),
+) -> OperationResult:
+    try:
+        manifest = load_project(project_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+
+    try:
+        return await run_in_threadpool(
+            lambda: regenerate_project(
+                get_orchestrator(),
+                manifest,
+                solidify_mm=solidify_mm,
+            )
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     except RuntimeError as exc:

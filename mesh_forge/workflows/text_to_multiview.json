@@ -39,8 +39,8 @@
       "seed": "__SEED_FRONT__",
       "steps": "__STEPS__",
       "cfg": "__CFG__",
-      "sampler_name": "euler",
-      "scheduler": "sgm_uniform",
+      "sampler_name": "__SAMPLER__",
+      "scheduler": "__SCHEDULER__",
       "denoise": 1,
       "model": [
         "1",
@@ -73,12 +73,17 @@
       ]
     }
   },
-  "7": {
-    "class_type": "EmptyLatentImage",
+  "25": {
+    "class_type": "VAEEncode",
     "inputs": {
-      "width": "__WIDTH__",
-      "height": "__HEIGHT__",
-      "batch_size": 1
+      "pixels": [
+        "6",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ]
     }
   },
   "8": {
@@ -97,9 +102,9 @@
       "seed": "__SEED_LEFT__",
       "steps": "__STEPS__",
       "cfg": "__CFG__",
-      "sampler_name": "euler",
-      "scheduler": "sgm_uniform",
-      "denoise": 1,
+      "sampler_name": "__SAMPLER__",
+      "scheduler": "__SCHEDULER__",
+      "denoise": "__VIEW_DENOISE__",
       "model": [
         "1",
         0
@@ -113,7 +118,7 @@
         0
       ],
       "latent_image": [
-        "7",
+        "25",
         0
       ]
     }
@@ -129,14 +134,6 @@
         "1",
         2
       ]
-    }
-  },
-  "11": {
-    "class_type": "EmptyLatentImage",
-    "inputs": {
-      "width": "__WIDTH__",
-      "height": "__HEIGHT__",
-      "batch_size": 1
     }
   },
   "12": {
@@ -155,9 +152,9 @@
       "seed": "__SEED_BACK__",
       "steps": "__STEPS__",
       "cfg": "__CFG__",
-      "sampler_name": "euler",
-      "scheduler": "sgm_uniform",
-      "denoise": 1,
+      "sampler_name": "__SAMPLER__",
+      "scheduler": "__SCHEDULER__",
+      "denoise": "__VIEW_DENOISE__",
       "model": [
         "1",
         0
@@ -171,7 +168,7 @@
         0
       ],
       "latent_image": [
-        "11",
+        "25",
         0
       ]
     }
@@ -187,14 +184,6 @@
         "1",
         2
       ]
-    }
-  },
-  "15": {
-    "class_type": "EmptyLatentImage",
-    "inputs": {
-      "width": "__WIDTH__",
-      "height": "__HEIGHT__",
-      "batch_size": 1
     }
   },
   "16": {
@@ -213,9 +202,9 @@
       "seed": "__SEED_RIGHT__",
       "steps": "__STEPS__",
       "cfg": "__CFG__",
-      "sampler_name": "euler",
-      "scheduler": "sgm_uniform",
-      "denoise": 1,
+      "sampler_name": "__SAMPLER__",
+      "scheduler": "__SCHEDULER__",
+      "denoise": "__VIEW_DENOISE__",
       "model": [
         "1",
         0
@@ -229,7 +218,7 @@
         0
       ],
       "latent_image": [
-        "15",
+        "25",
         0
       ]
     }

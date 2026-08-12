@@ -10,6 +10,12 @@ from openai import OpenAI
 
 from mesh_forge.config import AppConfig, load_config
 
+DEFAULT_CREATE_QUESTIONS = [
+    "Какая поза? (сидит / стоит / динамичная)",
+    "Стиль: matte clay фигурка или другой?",
+    "Какие детали обязательны? (уши, хвост, основание…)",
+]
+
 PLANNER_SYSTEM = """You are a 3D mesh operations planner for 3D printing.
 Given a user instruction and optional mesh stats, output ONLY valid JSON:
 {
@@ -80,7 +86,7 @@ class LMStudioClient:
         ).strip()
 
     def clarify_or_enhance(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
-        system = """You help prepare prompts for text-to-3D (ComfyUI: multiview images then mesh).
+        system = """You help prepare a short English subject line for text-to-3D image generation.
 Reply with ONLY valid JSON:
 {
   "intent": "create",
@@ -91,36 +97,55 @@ Reply with ONLY valid JSON:
   "confidence": 0.0
 }
 
-Rules:
-- Translate/improve the object description into clear English for image generation.
-- draft_prompt_en must be ONE English paragraph: concrete geometry, pose, distinctive parts
-  (ears/tail/paws etc.), "single solid object", "figurine/statue" if relevant, clean studio look,
-  smooth closed surface, no floating debris, suitable for 3D printing.
-- Prefer phrases like "watertight silhouette", "no holes", "clean manifold surface".
+Rules for draft_prompt_en:
+- Faithful translation of what the user asked — do NOT reinvent or over-interpret.
+- ONE short sentence (max ~35 words). Example:
+  user: "настольная фигурка потягивающегося и зевающего кота"
+  draft: "A desktop figurine of a stretching and yawning cat."
+- Keep pose/action words from the user (stretching, yawning, sitting…).
+- Do NOT add: watertight, manifold, multiview, identical from all angles, clay/matte finish,
+  studio lighting, printable, silhouette, no holes, no fur, debris, geometric form, or similar
+  tech/quality boilerplate (that is added elsewhere).
+- Do NOT invent extra anatomy details the user did not mention (paw positions, tail curl, tongue…).
 - Do NOT invent numeric dimensions unless the user gave them.
-- If the request is ambiguous, set ready=false and ask 1-3 questions (pose, style, key parts).
-- If enough detail exists, set ready=true, questions=[], and fill draft_prompt_en.
-- Never map the request to mesh filters (smooth/decimate/solidify)."""
+
+Clarify rules:
+- Prefer ready=true when the subject is clear. Ask questions ONLY if critical.
+- If ready=false: questions MUST contain 1-3 real question strings; assistant_message lists them.
+- If ready=true: questions=[], fill draft_prompt_en.
+- Never map the request to mesh filters (smooth/decimate/solidify).
+- If the user complains that you asked nothing / wants to proceed, set ready=true with a
+  faithful short draft from the conversation so far."""
         text = self.chat(
             self.config.llm.planner_model,
             [{"role": "system", "content": system}, *messages],
-            temperature=0.3,
+            temperature=0.2,
         )
         data = _parse_json_response(text)
         if data.get("parse_error"):
             return {
                 "intent": "create",
                 "assistant_message": str(data.get("summary") or text)[:500],
-                "questions": ["Можете описать объект подробнее: поза, стиль, ключевые детали?"],
+                "questions": list(DEFAULT_CREATE_QUESTIONS),
                 "ready": False,
                 "draft_prompt_en": "",
                 "confidence": 0.0,
             }
         data["intent"] = "create"
-        data["questions"] = list(data.get("questions") or [])[:3]
-        data["draft_prompt_en"] = str(data.get("draft_prompt_en") or "").strip()
-        data["ready"] = bool(data.get("ready")) and bool(data["draft_prompt_en"])
-        data["assistant_message"] = str(data.get("assistant_message") or "").strip()
+        questions = [str(q).strip() for q in (data.get("questions") or []) if str(q).strip()][:3]
+        draft = _sanitize_create_draft(str(data.get("draft_prompt_en") or "").strip())
+        ready = bool(data.get("ready")) and bool(draft)
+        assistant = str(data.get("assistant_message") or "").strip()
+
+        # Empty "I'll ask questions" responses are useless — force defaults or draft.
+        if not ready and not questions:
+            questions = list(DEFAULT_CREATE_QUESTIONS)
+        if ready:
+            questions = []
+        data["questions"] = questions
+        data["draft_prompt_en"] = draft
+        data["ready"] = ready
+        data["assistant_message"] = assistant
         return data
 
     def interpret_mesh_edit(
@@ -257,3 +282,47 @@ def _parse_json_response(text: str) -> dict[str, Any]:
         return json.loads(text)
     except json.JSONDecodeError:
         return {"operations": [], "summary": text, "parse_error": True}
+
+
+_DRAFT_BOILERPLATE_RE = re.compile(
+    r"\b("
+    r"watertight|manifold|multiview|identical character from all angles|"
+    r"matte clay(?: material)?(?: finish)?|smooth closed surface|"
+    r"no holes|no floating debris|photoreal fur|studio lighting|"
+    r"3d printable|printable figurine|clean silhouette|"
+    r"suitable for (?:multiview )?reconstruction|simple geometric form|"
+    r"optimized for 3d|clean manifold surface|closed surface without"
+    r")\b[^.]*\.?",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_create_draft(draft: str) -> str:
+    """Strip quality/tech boilerplate the LLM loves to invent; keep subject short."""
+    text = (draft or "").strip()
+    if not text:
+        return ""
+    # Drop sentences that are mostly boilerplate.
+    parts = re.split(r"(?<=[.!?])\s+", text)
+    kept: list[str] = []
+    for part in parts:
+        cleaned = _DRAFT_BOILERPLATE_RE.sub("", part).strip(" ,;")
+        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
+        if len(cleaned) < 8:
+            continue
+        if _DRAFT_BOILERPLATE_RE.search(part) and len(cleaned) < 24:
+            continue
+        kept.append(cleaned)
+    text = " ".join(kept).strip() or draft.strip()
+    # Prefer the first sentence — later ones are usually invented polish.
+    text = re.split(r"(?<=[.!?])\s+", text)[0].strip()
+    # If still a comma-stack of invented details, keep the core clause(s).
+    words = text.split()
+    if len(words) > 22 and "," in text:
+        head = text.split(",")[0].strip()
+        if len(head.split()) >= 6:
+            text = head.rstrip(".,; ") + "."
+            words = text.split()
+    if len(words) > 28:
+        text = " ".join(words[:28]).rstrip(",;") + "."
+    return text

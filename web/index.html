@@ -124,6 +124,7 @@
         <div class="meta" id="project-meta">
           <p class="muted">Проект не выбран</p>
         </div>
+        <button type="button" class="btn block hidden" id="btn-regenerate">Перезапустить генерацию</button>
         <a class="btn block hidden" id="btn-download" download>Скачать STL</a>
       </section>
 
@@ -146,6 +147,54 @@
               <option value="quality">Quality — full MV + SDXL, медленнее</option>
             </select>
           </label>
+          <label class="field">Проекции
+            <select id="gen-views">
+              <option value="img2img">img2img — быстро, без лишних моделей</option>
+              <option value="zero123">Zero123 — орбита от front (~9GB)</option>
+              <option value="off">Off — только front, single-view mesh</option>
+            </select>
+          </label>
+          <label class="field check">
+            <input type="checkbox" id="gen-postprocess" checked />
+            Постобработка mesh (repair / orient / scale)
+          </label>
+          <details class="gen-advanced" open>
+            <summary>Checkpoints / семплинг / mesh</summary>
+            <div class="gen-knobs">
+              <label class="field gen-span2">SDXL checkpoint<input id="knob-ckpt" type="text" spellcheck="false" /></label>
+              <label class="field gen-span2">Hunyuan mesh<input id="knob-mesh-ckpt" type="text" spellcheck="false" /></label>
+              <label class="field gen-span2">Hunyuan image<input id="knob-image-ckpt" type="text" spellcheck="false" /></label>
+              <label class="field gen-span2">Zero123 checkpoint<input id="knob-z-ckpt" type="text" spellcheck="false" /></label>
+              <label class="field">steps<input id="knob-steps" type="number" min="1" max="80" step="1" /></label>
+              <label class="field">cfg<input id="knob-cfg" type="number" min="0.5" max="20" step="0.1" /></label>
+              <label class="field">width<input id="knob-width" type="number" min="256" max="1536" step="64" /></label>
+              <label class="field">height<input id="knob-height" type="number" min="256" max="1536" step="64" /></label>
+              <label class="field">mesh_steps<input id="knob-mesh-steps" type="number" min="1" max="80" step="1" /></label>
+              <label class="field">mesh_cfg<input id="knob-mesh-cfg" type="number" min="0.5" max="20" step="0.1" /></label>
+              <label class="field">mesh_guidance<input id="knob-mesh-guidance" type="number" min="0.5" max="20" step="0.1" /></label>
+              <label class="field">mesh resolution<input id="knob-mesh-res" type="number" min="512" max="8192" step="64" /></label>
+              <label class="field">octree<input id="knob-mesh-octree" type="number" min="64" max="1024" step="16" /></label>
+              <label class="field">chunks<input id="knob-mesh-chunks" type="number" min="500" max="50000" step="100" /></label>
+              <label class="field">img2img denoise<input id="knob-denoise" type="number" min="0.1" max="1" step="0.01" /></label>
+              <label class="field">denoise turbo<input id="knob-denoise-turbo" type="number" min="0.1" max="1" step="0.01" /></label>
+              <label class="field">Sampler<input id="knob-sampler" type="text" /></label>
+              <label class="field">Scheduler<input id="knob-scheduler" type="text" /></label>
+              <label class="field">Zero123 W<input id="knob-z-width" type="number" min="128" max="768" step="8" /></label>
+              <label class="field">Zero123 H<input id="knob-z-height" type="number" min="128" max="768" step="8" /></label>
+              <label class="field">Zero123 steps<input id="knob-z-steps" type="number" min="1" max="60" step="1" /></label>
+              <label class="field">Zero123 cfg<input id="knob-z-cfg" type="number" min="0.5" max="15" step="0.1" /></label>
+              <label class="field">Z sampler<input id="knob-z-sampler" type="text" /></label>
+              <label class="field">Z scheduler<input id="knob-z-scheduler" type="text" /></label>
+              <label class="field">azimuth L/B/R
+                <span class="knob-row">
+                  <input id="knob-az-l" type="number" step="1" />
+                  <input id="knob-az-b" type="number" step="1" />
+                  <input id="knob-az-r" type="number" step="1" />
+                </span>
+              </label>
+              <label class="field">elevation<input id="knob-elev" type="number" step="0.1" /></label>
+            </div>
+          </details>
           <pre class="log small" id="gen-active"></pre>
           <p class="muted" id="gen-missing"></p>
           <button class="btn primary block" id="btn-gen-save">Сохранить</button>

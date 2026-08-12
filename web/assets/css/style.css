@@ -164,11 +164,18 @@ textarea { resize: vertical; min-height: 72px; }
   display: flex;
   flex-direction: column;
   gap: 4px;
-  max-height: 200px;
+  max-height: 240px;
   overflow-y: auto;
 }
 
-.project-list li button {
+.project-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 4px;
+  align-items: stretch;
+}
+
+.project-list li button.project-select {
   width: 100%;
   text-align: left;
   padding: 10px 12px;
@@ -181,12 +188,37 @@ textarea { resize: vertical; min-height: 72px; }
   transition: background 0.12s, border-color 0.12s;
 }
 
-.project-list li button:hover { background: var(--bg-elevated); }
+.project-list li button.project-select:hover { background: var(--bg-elevated); }
 
-.project-list li button.active {
+.project-list li button.project-select.active {
   background: var(--bg-elevated);
   border-color: var(--accent-dim);
   box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.project-actions {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  opacity: 0.55;
+}
+
+.project-row:hover .project-actions,
+.project-row:focus-within .project-actions {
+  opacity: 1;
+}
+
+.project-actions .icon-btn {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  padding: 0;
+  font-size: 0.75rem;
+}
+
+.project-actions .icon-btn.danger:hover {
+  color: #ff8f8f;
+  border-color: rgba(255, 120, 120, 0.4);
 }
 
 .project-list .sub {
@@ -364,6 +396,42 @@ textarea { resize: vertical; min-height: 72px; }
   font-size: 0.85rem;
   color: var(--text-muted);
   cursor: pointer;
+}
+
+.gen-advanced {
+  margin: 8px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+
+.gen-advanced > summary {
+  cursor: pointer;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.gen-knobs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.gen-knobs .field { margin: 0; font-size: 0.75rem; }
+.gen-knobs .gen-span2 { grid-column: 1 / -1; }
+.gen-knobs input[type="number"],
+.gen-knobs input[type="text"] {
+  width: 100%;
+  padding: 6px 8px;
+  font-size: 0.8rem;
+}
+
+.knob-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 4px;
 }
 
 .btn {
@@ -552,6 +620,22 @@ textarea { resize: vertical; min-height: 72px; }
 }
 
 .history li strong { color: var(--text); }
+
+.hist-views {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.hist-view {
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: cover;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, 0.25);
+}
 
 .panel-toggle {
   width: 100%;

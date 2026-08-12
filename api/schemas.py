@@ -43,6 +43,14 @@ class CreateProjectRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
 
 
+class RenameProjectRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+
+
+class DuplicateProjectRequest(BaseModel):
+    name: str | None = Field(default=None, max_length=120)
+
+
 class OperationResult(BaseModel):
     message: str
     project: ProjectDetail
@@ -79,26 +87,69 @@ class GenerationPresetInfo(BaseModel):
     label: str
     checkpoint: str
     mesh_checkpoint: str
+    image_checkpoint: str = ""
     steps: int
     cfg: float
     mesh_steps: int
+    mesh_cfg: float = 4.0
+    mesh_guidance: float = 3.5
+
+
+class GenerationKnobs(BaseModel):
+    """Tunable generation knobs (checkpoints + sampling + mesh)."""
+    checkpoint: str = "sd_xl_turbo_1.0_fp16.safetensors"
+    mesh_checkpoint: str = "hunyuan3d-dit-v2-mv-turbo_fp16.safetensors"
+    image_checkpoint: str = "hunyuan3d-dit-v2-mv-turbo_fp16.safetensors"
+    zero123_checkpoint: str = "stable_zero123.ckpt"
+    width: int = 768
+    height: int = 768
+    steps: int = 8
+    cfg: float = 1.5
+    view_denoise: float = 0.58
+    view_denoise_turbo: float = 0.72
+    view_sampler: str = "euler"
+    view_scheduler: str = "sgm_uniform"
+    zero123_width: int = 256
+    zero123_height: int = 256
+    zero123_steps: int = 20
+    zero123_cfg: float = 3.0
+    zero123_sampler: str = "euler"
+    zero123_scheduler: str = "normal"
+    zero123_elevation: float = 0.0
+    zero123_azimuth_left: float = -90.0
+    zero123_azimuth_back: float = 180.0
+    zero123_azimuth_right: float = 90.0
+    mesh_steps: int = 20
+    mesh_cfg: float = 4.0
+    mesh_guidance: float = 3.5
+    mesh_resolution: int = 3072
+    mesh_octree_resolution: int = 256
+    mesh_num_chunks: int = 8000
 
 
 class GenerationActiveInfo(BaseModel):
     checkpoint: str
     mesh_checkpoint: str
     image_checkpoint: str
+    zero123_checkpoint: str = "stable_zero123.ckpt"
+    view_consistency: str = "img2img"
+    mesh_postprocess: bool = True
     steps: int
     cfg: float
     mesh_steps: int
     mesh_cfg: float
     mesh_guidance: float
+    knobs: GenerationKnobs = Field(default_factory=GenerationKnobs)
 
 
 class GenerationSettings(BaseModel):
     quality_preset: str
+    view_consistency: str = "img2img"
+    mesh_postprocess: bool = True
+    view_modes: dict[str, dict[str, str]] = Field(default_factory=dict)
     presets: dict[str, GenerationPresetInfo]
     active: GenerationActiveInfo
+    knobs: GenerationKnobs = Field(default_factory=GenerationKnobs)
     missing_checkpoints: list[str] = Field(default_factory=list)
     downloaded_checkpoints: list[str] = Field(default_factory=list)
     download_errors: list[str] = Field(default_factory=list)
@@ -106,6 +157,9 @@ class GenerationSettings(BaseModel):
 
 class GenerationSettingsUpdate(BaseModel):
     quality_preset: str
+    view_consistency: str = "img2img"
+    mesh_postprocess: bool = True
+    knobs: GenerationKnobs | None = None
     download_missing: bool = True
 
 

@@ -222,9 +222,17 @@ def save_generation_settings(
     orch: Orchestrator,
     *,
     quality_preset: str,
+    view_consistency: str = "img2img",
+    mesh_postprocess: bool = True,
+    knobs: dict | None = None,
     download_missing: bool = True,
 ) -> GenerationSettings:
-    cfg = update_generation_settings(quality_preset=quality_preset)
+    cfg = update_generation_settings(
+        quality_preset=quality_preset,
+        view_consistency=view_consistency,
+        mesh_postprocess=mesh_postprocess,
+        knobs=knobs,
+    )
     report = None
     if download_missing:
         missing = missing_comfyui_checkpoints(cfg)
@@ -374,3 +382,71 @@ def confirm_project_chat(
     result = run_generation_job(orch, manifest, job)
     chat.reset(manifest)
     return result
+
+
+def _extract_generation_prompt(instruction: str | None) -> tuple[str, str]:
+    """Return (generation_prompt, user_prompt) from a version instruction."""
+    text = (instruction or "").strip()
+    if not text:
+        return "", ""
+    user_prompt = ""
+    generation = ""
+    lower = text.lower()
+    if "generation:" in lower:
+        # Split user: / generation: blocks
+        lines = text.splitlines()
+        buf_user: list[str] = []
+        buf_gen: list[str] = []
+        mode = ""
+        for line in lines:
+            low = line.strip().lower()
+            if low.startswith("user:"):
+                mode = "user"
+                rest = line.split(":", 1)[1].strip() if ":" in line else ""
+                if rest:
+                    buf_user.append(rest)
+                continue
+            if low.startswith("generation:"):
+                mode = "gen"
+                rest = line.split(":", 1)[1].strip() if ":" in line else ""
+                if rest:
+                    buf_gen.append(rest)
+                continue
+            if mode == "user":
+                buf_user.append(line)
+            elif mode == "gen":
+                buf_gen.append(line)
+        user_prompt = "\n".join(buf_user).strip()
+        generation = "\n".join(buf_gen).strip()
+    if not generation:
+        generation = text
+    if not user_prompt:
+        user_prompt = generation
+    return generation, user_prompt
+
+
+def regenerate_project(
+    orch: Orchestrator,
+    manifest: ProjectManifest,
+    *,
+    solidify_mm: float = 0.0,
+) -> OperationResult:
+    """Re-run text→mesh using the last stored generation prompt."""
+    for entry in reversed(manifest.versions):
+        generation, user_prompt = _extract_generation_prompt(entry.instruction)
+        if not generation.strip():
+            continue
+        semantic = (entry.branch or "").startswith("regen") or (entry.action or "") in {
+            "semantic_edit",
+            "regen_edit",
+        }
+        job = build_job(
+            project_id=manifest.id,
+            prompt=generation,
+            user_prompt=user_prompt,
+            generation_prompt=generation,
+            semantic_regen=semantic,
+            solidify_mm=solidify_mm,
+        )
+        return run_generation_job(orch, manifest, job)
+    raise ValueError("Нет предыдущего промпта генерации — сначала создайте модель через чат")
