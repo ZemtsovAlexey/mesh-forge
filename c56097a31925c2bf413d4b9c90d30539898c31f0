@@ -1,0 +1,36 @@
+config.yaml.example
+  badecbafecb2d90b 19-21
+mesh_forge/config.py
+  badecbafecb2d90b 380-413,415,417-424,472-473
+README.md
+  badecbafecb2d90b 50,52-53,55,57-61,72-73,76
+scripts/comfyui-common.ps1
+  badecbafecb2d90b 2,4,11-14,18,29-263,265,267-304,310-323,325-326,329-366,368-370,372-385
+scripts/setup-comfyui.ps1
+  badecbafecb2d90b 9,18-22,24-45,48-59,61-62,64-67,69-71,73-74,76-83,85-89,91-95,97-98,100-104,106-108,110-117,119,121-122,125-128,134,165,204-215,217-219,221
+scripts/setup.ps1
+  badecbafecb2d90b 118-119
+scripts/start-comfyui.ps1
+  badecbafecb2d90b 27-29,43-46,49-50,54-65
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "git-ai-lite-1.0.0",
+  "base_commit_sha": "b81c32bf48f882c4af5a6d46fb72405f1a1b59fe",
+  "prompts": {
+    "badecbafecb2d90b": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "1c582492-63ce-4e0d-8ad8-afa0e3c29cbe",
+        "model": "grok-4.5"
+      },
+      "human_author": "╨Ч╨╡╨╝╤Ж╨╛╨▓ ╨Р╨╗╨╡╨║╤Б╨╡╨╣ <zemtsov@moedelo.org>",
+      "messages": [],
+      "total_additions": 602,
+      "total_deletions": 174,
+      "accepted_lines": 547,
+      "accepted_deletions": 113,
+      "overridden_lines": 55
+    }
+  }
+}
