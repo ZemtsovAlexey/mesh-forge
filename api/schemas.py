@@ -75,6 +75,40 @@ class LLMModelsResponse(BaseModel):
     vision_model: str | None = None
 
 
+class GenerationPresetInfo(BaseModel):
+    label: str
+    checkpoint: str
+    mesh_checkpoint: str
+    steps: int
+    cfg: float
+    mesh_steps: int
+
+
+class GenerationActiveInfo(BaseModel):
+    checkpoint: str
+    mesh_checkpoint: str
+    image_checkpoint: str
+    steps: int
+    cfg: float
+    mesh_steps: int
+    mesh_cfg: float
+    mesh_guidance: float
+
+
+class GenerationSettings(BaseModel):
+    quality_preset: str
+    presets: dict[str, GenerationPresetInfo]
+    active: GenerationActiveInfo
+    missing_checkpoints: list[str] = Field(default_factory=list)
+    downloaded_checkpoints: list[str] = Field(default_factory=list)
+    download_errors: list[str] = Field(default_factory=list)
+
+
+class GenerationSettingsUpdate(BaseModel):
+    quality_preset: str
+    download_missing: bool = True
+
+
 class ExportInfo(BaseModel):
     report: str
     print_ready: bool = False
@@ -89,3 +123,33 @@ class ProgressInfo(BaseModel):
     active: bool
     error: str | None = None
     elapsed_sec: float = 0.0
+
+
+class ChatMessageInfo(BaseModel):
+    role: str
+    content: str
+    created_at: str = ""
+
+
+class ChatStateInfo(BaseModel):
+    messages: list[ChatMessageInfo] = Field(default_factory=list)
+    mode: str = "create"
+    status: str = "idle"
+    intent: str = "create"
+    draft_prompt_en: str = ""
+    edit_brief_en: str = ""
+    user_prompt: str = ""
+    ready: bool = False
+    questions: list[str] = Field(default_factory=list)
+    assistant_message: str = ""
+
+
+class ChatMessageRequest(BaseModel):
+    text: str = ""
+
+
+class ChatConfirmRequest(BaseModel):
+    solidify_mm: float = 0.0
+    mode: str = "light"
+    smooth_iters: int = 1
+    remove_bg: bool = True

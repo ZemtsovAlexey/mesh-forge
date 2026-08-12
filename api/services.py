@@ -6,7 +6,16 @@ import tempfile
 import traceback
 from pathlib import Path
 
-from mesh_forge.config import AppConfig, LLMConfig, load_config, update_llm_settings
+from mesh_forge.config import (
+    AppConfig,
+    LLMConfig,
+    download_comfyui_checkpoints,
+    generation_settings_payload,
+    load_config,
+    missing_comfyui_checkpoints,
+    update_generation_settings,
+    update_llm_settings,
+)
 from mesh_forge.domain import GenerationJob, JobOptions
 from mesh_forge.manifest import ProjectManifest, list_projects
 from mesh_forge.mesh_qc import analyze_mesh, is_print_ready
@@ -17,6 +26,7 @@ from mesh_forge.adapters import LMStudioClient
 from api.schemas import (
     ArtifactInfo,
     ExportInfo,
+    GenerationSettings,
     LLMModelsResponse,
     LLMSettings,
     OperationResult,
@@ -204,6 +214,34 @@ def save_llm_settings(
     return orch.llm.models_status(), system_status(orch)
 
 
+def get_generation_settings() -> GenerationSettings:
+    return GenerationSettings(**generation_settings_payload())
+
+
+def save_generation_settings(
+    orch: Orchestrator,
+    *,
+    quality_preset: str,
+    download_missing: bool = True,
+) -> GenerationSettings:
+    cfg = update_generation_settings(quality_preset=quality_preset)
+    report = None
+    if download_missing:
+        missing = missing_comfyui_checkpoints(cfg)
+        if missing:
+            report = download_comfyui_checkpoints(missing, config=cfg)
+            if report.get("errors"):
+                # Keep preset saved, but surface download failures.
+                still = missing_comfyui_checkpoints(cfg)
+                if still:
+                    raise RuntimeError(
+                        "Preset сохранён, но не удалось скачать checkpoints: "
+                        + "; ".join(report["errors"])
+                    )
+    orch.reload_config()
+    return GenerationSettings(**generation_settings_payload(cfg, download_report=report))
+
+
 def save_upload_to_tmp(upload_file, suffix: str) -> Path:
     tmp = Path(tempfile.mkdtemp(prefix="meshforge_"))
     dest = tmp / f"upload{suffix}"
@@ -226,10 +264,14 @@ def build_job(
     scan_mode: str = "light",
     smooth_iters: int = 1,
     view_count: int = 4,
+    user_prompt: str = "",
+    generation_prompt: str = "",
+    semantic_regen: bool = False,
 ) -> GenerationJob:
+    generation = (generation_prompt or prompt or "").strip()
     return GenerationJob(
         project_id=project_id,
-        prompt=prompt.strip(),
+        prompt=generation,
         image_paths=image_paths or [],
         source_mesh=source_mesh,
         options=JobOptions(
@@ -240,5 +282,95 @@ def build_job(
             smooth_iters=smooth_iters,
             use_current_mesh=use_current_mesh,
             view_count=view_count,
+            user_prompt=(user_prompt or "").strip(),
+            generation_prompt=generation,
+            semantic_regen=semantic_regen,
         ),
     )
+
+
+def chat_state_response(data: dict) -> dict:
+    return data
+
+
+def get_project_chat(manifest: ProjectManifest) -> dict:
+    from mesh_forge.application import PromptChatService
+
+    return PromptChatService().get(manifest)
+
+
+def post_project_chat_message(
+    manifest: ProjectManifest,
+    *,
+    text: str,
+    has_images: bool = False,
+) -> dict:
+    from mesh_forge.application import PromptChatService
+
+    return PromptChatService().post_message(manifest, text, has_images=has_images)
+
+
+def confirm_project_chat(
+    orch: Orchestrator,
+    manifest: ProjectManifest,
+    *,
+    image_paths: list[Path] | None = None,
+    solidify_mm: float = 0.0,
+    mode: str = "light",
+    smooth_iters: int = 1,
+    remove_bg: bool = True,
+) -> OperationResult:
+    from mesh_forge.application import PromptChatService
+
+    chat = PromptChatService()
+    state = chat.load(manifest)
+    image_paths = image_paths or []
+
+    # Manual cleanup path is separate; chat confirm is create / semantic regen / images.
+    if state.intent == "semantic_edit" or (state.mode == "edit" and state.edit_brief_en):
+        if not state.ready or not (state.edit_brief_en or state.draft_prompt_en).strip():
+            raise ValueError("Chat is not ready for semantic regenerate")
+        brief = (state.edit_brief_en or state.draft_prompt_en).strip()
+        job = build_job(
+            project_id=manifest.id,
+            prompt=brief,
+            user_prompt=state.user_prompt or brief,
+            generation_prompt=brief,
+            semantic_regen=True,
+            solidify_mm=solidify_mm,
+        )
+        result = run_generation_job(orch, manifest, job)
+        chat.reset(manifest)
+        return result
+
+    if image_paths and not state.draft_prompt_en:
+        job = build_job(
+            project_id=manifest.id,
+            prompt=state.user_prompt,
+            user_prompt=state.user_prompt,
+            generation_prompt=state.user_prompt,
+            image_paths=image_paths,
+            remove_bg=remove_bg,
+            solidify_mm=solidify_mm,
+        )
+        result = run_generation_job(orch, manifest, job)
+        chat.reset(manifest)
+        return result
+
+    if not state.ready or not state.draft_prompt_en.strip():
+        raise ValueError("Chat is not ready to generate")
+
+    job = build_job(
+        project_id=manifest.id,
+        prompt=state.draft_prompt_en,
+        user_prompt=state.user_prompt or state.draft_prompt_en,
+        generation_prompt=state.draft_prompt_en,
+        image_paths=image_paths,
+        remove_bg=remove_bg,
+        solidify_mm=solidify_mm,
+        scan_mode=mode,
+        smooth_iters=smooth_iters,
+    )
+    result = run_generation_job(orch, manifest, job)
+    chat.reset(manifest)
+    return result

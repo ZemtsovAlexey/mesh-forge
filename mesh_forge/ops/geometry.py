@@ -92,8 +92,74 @@ def normalize_height_mm(mesh: trimesh.Trimesh, target_height_mm: float = 160.0) 
     return mesh
 
 
-def try_make_watertight(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
-    """Light repair only — aggressive fill_holes can explode face count on dense nets."""
+def keep_largest_component(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
+    """Drop tiny floating debris; keep all significant connected parts."""
+    try:
+        parts = mesh.split(only_watertight=False)
+    except Exception:
+        return mesh
+    if not parts or len(parts) <= 1:
+        return mesh
+    sizes = [len(part.faces) for part in parts]
+    largest = max(sizes) if sizes else 0
+    if largest <= 0:
+        return mesh
+    threshold = max(50, int(0.02 * largest))
+    kept = [part for part in parts if len(part.faces) >= threshold]
+    if not kept:
+        kept = [max(parts, key=lambda part: len(part.faces))]
+    if len(kept) == len(parts):
+        return mesh
+    dropped = sum(sizes) - sum(len(p.faces) for p in kept)
+    logger.info(
+        "keep_largest_component: %d parts -> kept %d (dropped %d faces)",
+        len(parts),
+        len(kept),
+        dropped,
+    )
+    if len(kept) == 1:
+        return kept[0]
+    try:
+        return trimesh.util.concatenate(kept)
+    except Exception:
+        return max(kept, key=lambda part: len(part.faces))
+
+
+def remove_needle_faces(mesh: trimesh.Trimesh, min_edge_mm: float = 0.08) -> trimesh.Trimesh:
+    """Remove faces with tiny edges or extreme aspect (classic recon 'needles')."""
+    mesh = mesh.copy()
+    if len(mesh.faces) == 0 or len(mesh.vertices) == 0:
+        return mesh
+    min_edge_mm = max(float(min_edge_mm), 1e-4)
+    verts = np.asarray(mesh.vertices, dtype=np.float64)
+    faces = np.asarray(mesh.faces, dtype=np.int64)
+    e0 = np.linalg.norm(verts[faces[:, 0]] - verts[faces[:, 1]], axis=1)
+    e1 = np.linalg.norm(verts[faces[:, 1]] - verts[faces[:, 2]], axis=1)
+    e2 = np.linalg.norm(verts[faces[:, 2]] - verts[faces[:, 0]], axis=1)
+    min_e = np.minimum(np.minimum(e0, e1), e2)
+    max_e = np.maximum(np.maximum(e0, e1), e2)
+    aspect = max_e / np.maximum(min_e, 1e-12)
+    # Absolute + relative floors so dense but valid surfaces are kept.
+    rel_floor = float(np.percentile(min_e, 1))
+    edge_floor = max(min_edge_mm, rel_floor)
+    keep = (min_e >= edge_floor) & (aspect < 60.0)
+    # Never delete more than ~25% in one pass.
+    if float(keep.mean()) < 0.75:
+        edge_floor = max(min_edge_mm * 0.25, float(np.percentile(min_e, 0.5)))
+        keep = (min_e >= edge_floor) & (aspect < 100.0)
+    if float(keep.mean()) < 0.75:
+        keep = aspect < 120.0
+    removed = int((~keep).sum())
+    if removed <= 0:
+        return mesh
+    mesh.update_faces(keep)
+    mesh.remove_unreferenced_vertices()
+    logger.info("remove_needle_faces: removed %d faces (edge_floor=%.4f mm)", removed, edge_floor)
+    return mesh
+
+
+def try_make_watertight(mesh: trimesh.Trimesh, *, max_faces_for_fill: int = 200_000) -> trimesh.Trimesh:
+    """Light repair + optional hole fill (skip on huge nets to avoid explosion)."""
     mesh = mesh.copy()
     try:
         trimesh.repair.fix_normals(mesh)
@@ -104,13 +170,163 @@ def try_make_watertight(mesh: trimesh.Trimesh) -> trimesh.Trimesh:
         mesh.remove_unreferenced_vertices()
     except Exception:
         pass
-    # Soft hole fill: only if mesh is small enough / few holes
     try:
-        if (not mesh.is_watertight) and len(mesh.faces) < 80_000:
+        if max_faces_for_fill > 0 and (not mesh.is_watertight) and len(mesh.faces) <= int(max_faces_for_fill):
             trimesh.repair.fill_holes(mesh)
+    except Exception as exc:
+        logger.warning("fill_holes failed: %s", exc)
+    return mesh
+
+
+def _faces_ok(mesh: trimesh.Trimesh, baseline: int, *, min_faces: int = 500, min_ratio: float = 0.05) -> bool:
+    n = len(mesh.faces) if mesh is not None else 0
+    if n < min_faces:
+        return False
+    if baseline > 0 and n < int(baseline * min_ratio):
+        return False
+    return True
+
+
+def repair_reconstruction_mesh(
+    mesh: trimesh.Trimesh,
+    *,
+    target_faces: int = 120_000,
+    smooth_iters: int = 3,
+    min_edge_mm: float = 0.08,
+    close_holes: bool = True,
+    voxel_mm: float = 1.0,
+) -> trimesh.Trimesh:
+    """
+    Post-process ComfyUI / Hunyuan raw meshes.
+
+    Order matters: voxel-remesh while the surface is still dense, then
+    light cleanup / decimate. Needle filters before voxel often leave an
+    open shell that marching-cubes cannot seal.
+    """
+    baseline = max(len(mesh.faces), 1)
+    current = mesh
+
+    def _step(label: str, fn, *, min_ratio: float = 0.05) -> bool:
+        nonlocal current
+        before = current
+        try:
+            nxt = fn(current)
+        except Exception as exc:
+            logger.warning("repair step %s failed: %s", label, exc)
+            return False
+        if nxt is None or not _faces_ok(nxt, baseline, min_ratio=min_ratio):
+            logger.warning(
+                "repair step %s rejected (%s faces, baseline %s)",
+                label,
+                0 if nxt is None else len(nxt.faces),
+                baseline,
+            )
+            current = before
+            return False
+        current = nxt
+        return True
+
+    _step("basic_repair", lambda m: try_make_watertight(m, max_faces_for_fill=0))
+
+    # Seal early (raw Hunyuan nets voxelize much better than pre-trimmed ones).
+    sealed = bool(getattr(current, "is_watertight", False))
+    if close_holes and voxel_mm and float(voxel_mm) > 0 and not sealed:
+        pitches = []
+        base = float(voxel_mm)
+        for p in (base, base * 1.5, max(base * 2.0, 2.0)):
+            if p not in pitches:
+                pitches.append(p)
+        source = current
+        best = None
+        for pitch in pitches:
+            logger.info("repair_reconstruction: voxel remesh @ %.3f mm", pitch)
+            try:
+                candidate = remesh_voxel(source, pitch)
+            except Exception as exc:
+                logger.warning("voxel remesh @ %.3f failed: %s", pitch, exc)
+                continue
+            if candidate is None or not _faces_ok(candidate, baseline, min_ratio=0.02):
+                logger.warning(
+                    "voxel remesh @ %.3f rejected (%s faces)",
+                    pitch,
+                    0 if candidate is None else len(candidate.faces),
+                )
+                continue
+            best = candidate
+            if bool(getattr(candidate, "is_watertight", False)):
+                current = candidate
+                sealed = True
+                logger.info(
+                    "voxel remesh sealed @ %.3f mm (%d faces)",
+                    pitch,
+                    len(candidate.faces),
+                )
+                break
+        if not sealed and best is not None:
+            current = best
+            logger.warning("voxel remesh did not seal; keeping best candidate (%d faces)", len(best.faces))
+
+        if current is not source:
+            try:
+                target_h = float(np.max(np.asarray(source.extents, dtype=float)))
+                current = normalize_height_mm(current, target_h)
+            except Exception as exc:
+                logger.debug("re-normalize after voxel skipped: %s", exc)
+
+    if sealed and smooth_iters > 0:
+        _step("smooth_sealed", lambda m: smooth_mesh(m, iterations=max(1, min(smooth_iters, 3))))
+    elif not sealed:
+        # Fallback path when voxel could not seal.
+        _step("keep_components", keep_largest_component)
+        _step("remove_needles", lambda m: remove_needle_faces(m, min_edge_mm=min_edge_mm))
+        if close_holes:
+            fill_cap = max(int(target_faces or 120_000) * 2, 200_000)
+            _step("fill_holes", lambda m: try_make_watertight(m, max_faces_for_fill=fill_cap))
+            if not bool(getattr(current, "is_watertight", False)):
+                def _pml(m: trimesh.Trimesh) -> trimesh.Trimesh:
+                    from mesh_forge.ops.repair import repair_with_pymeshlab
+
+                    return repair_with_pymeshlab(m, smooth_iters=0)
+
+                _step("pymeshlab", _pml)
+        if smooth_iters > 0:
+            _step("smooth", lambda m: smooth_mesh(m, iterations=smooth_iters))
+
+    target = int(target_faces) if target_faces else 0
+    if target > 0 and len(current.faces) > int(target * 1.15):
+        before_decimate = current
+        if _step("decimate", lambda m: decimate(m, target)):
+            # Decimate can open a sealed mesh — revert if it did.
+            if sealed and not bool(getattr(current, "is_watertight", False)):
+                logger.warning("decimate re-opened mesh; reverting")
+                current = before_decimate
+
+    # Never run needle/component filters on a sealed mesh — they reopen holes.
+    if not bool(getattr(current, "is_watertight", False)):
+        _step("remove_needles_final", lambda m: remove_needle_faces(m, min_edge_mm=min_edge_mm * 0.5))
+        _step("keep_components_final", keep_largest_component)
+
+    try:
+        trimesh.repair.fix_normals(current)
     except Exception:
         pass
-    return mesh
+    try:
+        current.merge_vertices()
+        current.remove_unreferenced_vertices()
+    except Exception as exc:
+        logger.debug("merge_vertices skipped: %s", exc)
+    try:
+        # Refresh cached topology flags after merge.
+        current._cache.clear()
+    except Exception:
+        pass
+    logger.info(
+        "repair_reconstruction: %d -> %d faces, watertight=%s",
+        baseline,
+        len(current.faces),
+        bool(getattr(current, "is_watertight", False)),
+    )
+    return current
 
 
 def smooth_mesh(mesh: trimesh.Trimesh, iterations: int = 2) -> trimesh.Trimesh:

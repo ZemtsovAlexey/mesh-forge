@@ -49,6 +49,15 @@ class PipelineRunner:
         self.image_to_mesh = ComfyImageToMeshBackend(self.image_generator)
         self.llm = LMStudioClient(self.config)
 
+    @staticmethod
+    def _solidify_note(solidify_mm: float) -> str | None:
+        if solidify_mm > 0:
+            return (
+                f"Solidify {solidify_mm:g} mm was requested, but Blender is no longer part of "
+                "the runtime; set wall thickness in your slicer."
+            )
+        return None
+
     def run(self, manifest: ProjectManifest, job: GenerationJob) -> RunResult:
         plan = self.planner.plan(job)
         work_dir = manifest.root / "work" / f"v{manifest.current_version + 1}_{plan.branch}"
@@ -59,11 +68,19 @@ class PipelineRunner:
         notes: list[str] = [plan.summary]
         operations: list[dict] = []
         reference = image_set.primary().name if image_set else None
-        instruction = job.prompt.strip() or None
+        user_prompt = (job.options.user_prompt or "").strip()
+        generation_prompt = (job.options.generation_prompt or job.prompt or "").strip()
+        if generation_prompt:
+            job.prompt = generation_prompt
+        instruction = user_prompt or generation_prompt or None
         raw_mesh: MeshArtifact | None = None
         version_artifacts: list[dict[str, Any]] = []
 
         logger.info("run job project=%s inputs=%s plan=%s", manifest.id, job.describe_inputs(), plan.summary)
+        if user_prompt:
+            notes.append(f"User prompt: {user_prompt}")
+        if generation_prompt and generation_prompt != user_prompt:
+            notes.append(f"Generation prompt (EN): {generation_prompt}")
         for step in plan.steps:
             if step.step_type == PipelineStepType.TEXT_TO_MESH:
                 prog.update(manifest.id, 12, "concept")
@@ -90,22 +107,30 @@ class PipelineRunner:
                 if raw_mesh is None:
                     raise RuntimeError("Reconstruction result is missing")
                 prog.update(manifest.id, 88, "finalize")
+                solidify_mm = float(step.params.get("solidify_mm", 0.0))
                 final_mesh = self.mesh_processing.finalize_reconstruction(
                     raw_mesh.path,
                     work_dir / "finalize",
-                    solidify_mm=float(step.params.get("solidify_mm", 0.0)),
+                    solidify_mm=solidify_mm,
                 )
+                note = self._solidify_note(solidify_mm)
+                if note:
+                    notes.append(note)
             elif step.step_type == PipelineStepType.CLEANUP_MESH:
                 if current_mesh is None:
                     raise RuntimeError("Cleanup requires input mesh")
                 prog.update(manifest.id, 20, step.label)
+                solidify_mm = float(step.params.get("solidify_mm", 0.0))
                 final_mesh = self.mesh_processing.cleanup_mesh(
                     current_mesh,
                     work_dir / "cleanup",
                     mode=str(step.params.get("mode", "light")),
                     smooth_iters=int(step.params.get("smooth_iters", 1)),
-                    solidify_mm=float(step.params.get("solidify_mm", 0.0)),
+                    solidify_mm=solidify_mm,
                 )
+                note = self._solidify_note(solidify_mm)
+                if note:
+                    notes.append(note)
             elif step.step_type == PipelineStepType.ANALYZE_REFERENCE:
                 if current_mesh is None or not image_set:
                     raise RuntimeError("Reference analysis requires mesh and image")
@@ -134,6 +159,9 @@ class PipelineRunner:
                 instruction = resolved_instruction
                 if summary:
                     notes.append(summary)
+                note = self._solidify_note(float(step.params.get("solidify_mm", 0.0)))
+                if note:
+                    notes.append(note)
 
         if final_mesh is None:
             raise RuntimeError("Pipeline produced no output mesh")
@@ -155,7 +183,7 @@ class PipelineRunner:
             final_mesh,
             branch=plan.branch,
             action=plan.action,
-            instruction=instruction,
+            instruction=self._history_instruction(user_prompt, generation_prompt, instruction),
             ref=reference,
             ops=operations,
             artifacts=version_artifacts,
@@ -173,6 +201,22 @@ class PipelineRunner:
             instruction=instruction,
             reference=reference,
         )
+
+    def _history_instruction(
+        self,
+        user_prompt: str,
+        generation_prompt: str,
+        fallback: str | None,
+    ) -> str | None:
+        user_prompt = (user_prompt or "").strip()
+        generation_prompt = (generation_prompt or "").strip()
+        if user_prompt and generation_prompt and user_prompt != generation_prompt:
+            return f"user: {user_prompt}\ngeneration: {generation_prompt}"
+        if generation_prompt:
+            return generation_prompt
+        if user_prompt:
+            return user_prompt
+        return fallback
 
     def _stage_images(self, image_paths: list[Path], target_dir: Path) -> ImageSet:
         target_dir.mkdir(parents=True, exist_ok=True)

@@ -8,15 +8,7 @@ $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $stateDir = Join-Path $root ".runtime"
 $pidFile = Join-Path $stateDir "comfyui.pid"
-
-function Read-ComfyInstallDir {
-    param([string]$Fallback)
-    $cfg = Join-Path $root "config.yaml"
-    if (-not (Test-Path $cfg)) { return $Fallback }
-    $match = Select-String -Path $cfg -Pattern '^\s*install_dir:\s*(.+)$' | Select-Object -First 1
-    if (-not $match) { return $Fallback }
-    return $match.Matches[0].Groups[1].Value.Trim().Trim('"').Trim("'")
-}
+. (Join-Path $PSScriptRoot "comfyui-common.ps1")
 
 function Test-ComfyHealth {
     try {
@@ -32,10 +24,9 @@ if (Test-ComfyHealth) {
     exit 0
 }
 
-$installDir = if ($InstallDir) { $InstallDir } else { Read-ComfyInstallDir -Fallback "C:\AI\ComfyUI" }
-$python = Join-Path $installDir "venv\Scripts\python.exe"
-$mainPy = Join-Path $installDir "main.py"
-if (-not (Test-Path $python) -or -not (Test-Path $mainPy)) {
+$installDir = if ($InstallDir) { $InstallDir } else { Read-ComfyInstallDir -ProjectRoot $root }
+$layout = Resolve-ComfyLayout -InstallDir $installDir
+if (-not $layout.Python -or -not (Test-Path $layout.MainPy)) {
     throw "ComfyUI is not installed at $installDir. Run .\scripts\setup-comfyui.ps1 first."
 }
 
@@ -49,13 +40,17 @@ if (Test-Path $pidFile) {
     }
 }
 
-Write-Host "Starting ComfyUI from $installDir ..." -ForegroundColor Cyan
+Write-Host "Starting ComfyUI ($($layout.Kind)) from $($layout.ComfyRoot) ..." -ForegroundColor Cyan
 $outLog = Join-Path $stateDir "comfyui.out.log"
 $errLog = Join-Path $stateDir "comfyui.err.log"
+$args = @(".\main.py", "--listen", $ListenHost, "--port", "$Port")
+if ($layout.Kind -eq "portable") {
+    $args += "--windows-standalone-build"
+}
 $proc = Start-Process `
-    -FilePath $python `
-    -ArgumentList @(".\main.py", "--listen", $ListenHost, "--port", "$Port") `
-    -WorkingDirectory $installDir `
+    -FilePath $layout.Python `
+    -ArgumentList $args `
+    -WorkingDirectory $layout.ComfyRoot `
     -RedirectStandardOutput $outLog `
     -RedirectStandardError $errLog `
     -PassThru `
@@ -64,7 +59,7 @@ $proc = Start-Process `
 Set-Content -Path $pidFile -Value $proc.Id -Encoding ascii
 Write-Host "ComfyUI pid=$($proc.Id), logs=$outLog / $errLog"
 
-$deadline = (Get-Date).AddMinutes(2)
+$deadline = (Get-Date).AddMinutes(3)
 while ((Get-Date) -lt $deadline) {
     if (Test-ComfyHealth) {
         Write-Host "ComfyUI is ready at http://${ListenHost}:${Port}" -ForegroundColor Green

@@ -18,6 +18,26 @@ class JobPlanner:
         if not (job.has_prompt() or job.has_images() or job.has_mesh()):
             raise ValueError("Job must contain text, images, or mesh")
 
+        # Semantic regen: rewrite via ComfyUI text→mesh, not filter ops on existing mesh.
+        if job.options.semantic_regen and job.has_prompt():
+            return JobPlan(
+                branch="regen_edit",
+                action="semantic_edit",
+                summary="Regenerate mesh from semantic edit brief with ComfyUI",
+                steps=[
+                    PipelineStep(
+                        PipelineStepType.TEXT_TO_MESH,
+                        "ComfyUI semantic regen",
+                        {"count": job.options.view_count},
+                    ),
+                    PipelineStep(
+                        PipelineStepType.FINALIZE_RECONSTRUCTION,
+                        "Подготовка STL",
+                        {"solidify_mm": job.options.solidify_mm},
+                    ),
+                ],
+            )
+
         if job.has_mesh():
             if job.has_images():
                 return JobPlan(
@@ -38,19 +58,23 @@ class JobPlanner:
                     ],
                 )
             if job.has_prompt():
+                # Text + existing mesh without semantic_regen flag: treat as semantic regen
+                # (chat path sets the flag; legacy callers also get ComfyUI regen, not filters).
                 return JobPlan(
-                    branch="edit",
-                    action="text_edit",
-                    summary="Edit existing mesh from text instruction",
+                    branch="regen_edit",
+                    action="semantic_edit",
+                    summary="Regenerate mesh from text correction with ComfyUI",
                     steps=[
                         PipelineStep(
-                            PipelineStepType.EDIT_MESH,
-                            "Правка mesh",
-                            {
-                                "instruction": job.prompt.strip(),
-                                "solidify_mm": job.options.solidify_mm,
-                            },
-                        )
+                            PipelineStepType.TEXT_TO_MESH,
+                            "ComfyUI semantic regen",
+                            {"count": job.options.view_count},
+                        ),
+                        PipelineStep(
+                            PipelineStepType.FINALIZE_RECONSTRUCTION,
+                            "Подготовка STL",
+                            {"solidify_mm": job.options.solidify_mm},
+                        ),
                     ],
                 )
             return JobPlan(

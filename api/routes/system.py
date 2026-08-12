@@ -3,9 +3,22 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 
 from api.deps import get_orchestrator
-from api.schemas import LLMModelsResponse, LLMSettings, LLMSettingsUpdate, SystemStatus
-from api.services import fetch_llm_models, get_llm_settings, save_llm_settings, system_status
-
+from api.schemas import (
+    GenerationSettings,
+    GenerationSettingsUpdate,
+    LLMModelsResponse,
+    LLMSettings,
+    LLMSettingsUpdate,
+    SystemStatus,
+)
+from api.services import (
+    fetch_llm_models,
+    get_generation_settings,
+    get_llm_settings,
+    save_generation_settings,
+    save_llm_settings,
+    system_status,
+)
 router = APIRouter(prefix="/api", tags=["system"])
 
 
@@ -42,3 +55,31 @@ def get_llm_models(
     api_key: str = Query("lm-studio"),
 ) -> LLMModelsResponse:
     return fetch_llm_models(base_url, api_key)
+
+
+@router.get("/settings/generation", response_model=GenerationSettings)
+def get_generation() -> GenerationSettings:
+    return get_generation_settings()
+
+
+@router.put("/settings/generation", response_model=GenerationSettings)
+async def put_generation(body: GenerationSettingsUpdate) -> GenerationSettings:
+    try:
+        from functools import partial
+
+        from starlette.concurrency import run_in_threadpool
+
+        return await run_in_threadpool(
+            partial(
+                save_generation_settings,
+                get_orchestrator(),
+                quality_preset=body.quality_preset,
+                download_missing=body.download_missing,
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc

@@ -70,6 +70,13 @@ def analyze_mesh(mesh_path: Path) -> MeshStats:
             issues=issues,
         )
 
+    # STL reloads as disconnected triangle soup unless vertices are merged.
+    try:
+        mesh.merge_vertices()
+        mesh.remove_unreferenced_vertices()
+    except Exception:
+        pass
+
     if not mesh.is_watertight:
         issues.append("Mesh is not watertight (holes or open edges)")
     if not mesh.is_winding_consistent:

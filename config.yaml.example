@@ -5,23 +5,24 @@ llm:
   planner_model: qwen2.5-7b-instruct
   vision_model: qwen2.5-vl-7b-instruct
 paths:
-  blender: C:/Program Files/Blender Foundation/Blender 4.5/blender.exe
-  openscad: C:/Program Files/OpenSCAD/openscad.exe
-  projects: C:/AI/mesh-forge/projects
+  openscad: ""
+  projects: ""
 server:
   host: 0.0.0.0
   port: 7860
 gpu:
-  vram_gb: 8
+  vram_gb: 0
   sequential_models: true
 comfyui:
   enabled: true
   base_url: http://127.0.0.1:8188
-  install_dir: C:/AI/ComfyUI
-  workflow: C:/AI/mesh-forge/mesh_forge/workflows/text_to_mesh.json
-  text_to_multiview_workflow: C:/AI/mesh-forge/mesh_forge/workflows/text_to_multiview.json
-  multiview_to_mesh_workflow: C:/AI/mesh-forge/mesh_forge/workflows/multiview_to_mesh.json
-  image_to_mesh_workflow: C:/AI/mesh-forge/mesh_forge/workflows/image_to_mesh.json
+  install_dir: ""
+  workflow: ""
+  text_to_multiview_workflow: ""
+  multiview_to_mesh_workflow: ""
+  image_to_mesh_workflow: ""
+  # draft | quality
+  quality_preset: draft
   checkpoint: sd_xl_turbo_1.0_fp16.safetensors
   mesh_checkpoint: hunyuan3d-dit-v2-mv-turbo_fp16.safetensors
   image_checkpoint: hunyuan3d-dit-v2-mv-turbo_fp16.safetensors
@@ -39,3 +40,8 @@ comfyui:
   mesh_num_chunks: 8000
 photo:
   target_height_mm: 160
+  finalize_target_faces: 120000
+  finalize_smooth_iters: 3
+  finalize_min_edge_mm: 0.08
+  finalize_close_holes: true
+  finalize_voxel_mm: 1.0

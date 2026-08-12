@@ -25,6 +25,48 @@ def _pml_method(ms, name: str, **kwargs) -> None:
     fn(**kwargs)
 
 
+def repair_with_pymeshlab(mesh: trimesh.Trimesh, *, smooth_iters: int = 0) -> trimesh.Trimesh:
+    """Close holes / clean non-manifold via PyMeshLab when installed."""
+    if not _pymeshlab_available():
+        raise ImportError("pymeshlab is not installed")
+
+    import pymeshlab
+
+    with tempfile.TemporaryDirectory(prefix="meshforge_pml_") as tmp:
+        inp = Path(tmp) / "in.stl"
+        out = Path(tmp) / "out.stl"
+        save_mesh(mesh, inp)
+        ms = pymeshlab.MeshSet()
+        ms.load_new_mesh(str(inp))
+        for name in (
+            "meshing_remove_duplicate_vertices",
+            "meshing_remove_unreferenced_vertices",
+            "meshing_remove_duplicate_faces",
+            "meshing_remove_null_faces",
+            "meshing_repair_non_manifold_edges",
+            "meshing_repair_non_manifold_vertices",
+        ):
+            try:
+                _pml_method(ms, name)
+            except Exception:
+                pass
+        try:
+            _pml_method(ms, "meshing_remove_connected_component_by_face_number", mincomponentsize=50)
+        except Exception:
+            pass
+        try:
+            _pml_method(ms, "meshing_close_holes", maxholesize=80)
+        except Exception:
+            pass
+        if smooth_iters > 0:
+            try:
+                _pml_method(ms, "apply_coord_laplacian_smoothing", stepsmoothnum=smooth_iters)
+            except Exception:
+                pass
+        ms.save_current_mesh(str(out))
+        return load_mesh(out)
+
+
 def clean_scan_pymeshlab(inp: Path, out: Path, *, smooth_iters: int = 1) -> Path:
     import pymeshlab
 

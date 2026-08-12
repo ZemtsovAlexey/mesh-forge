@@ -100,12 +100,9 @@ class Orchestrator:
         return self.run_job(manifest, job)
 
     def system_status(self) -> dict[str, Any]:
-        from mesh_forge.backends.blender import blender_available
-
         return {
             "lmstudio": self.llm.health_check(),
             "comfyui": self.comfyui.health_check(),
-            "blender": blender_available(),
         }
 
     def status_text(self) -> str:

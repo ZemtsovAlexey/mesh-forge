@@ -76,15 +76,17 @@ function startProgressPolling(projectId) {
 }
 
 async function runOp(label, fn) {
-  if (!activeProjectId) { toast("Выберите проект", "error"); return; }
+  if (!activeProjectId) { toast("Выберите проект", "error"); return null; }
   setLoading(true, label);
   startProgressPolling(activeProjectId);
   try {
     const result = await fn();
     setProgressUI(100, "Готово", null);
     afterOperation(result);
+    return result;
   } catch (e) {
     toast(e.message?.slice(0, 200) || String(e), "error");
+    return null;
   } finally {
     setLoading(false);
   }
@@ -104,12 +106,15 @@ function bindFileDrop(inputId, dropSelector) {
   if (!input || !drop) return;
   input.addEventListener("change", () => {
     drop.classList.toggle("has-file", !!input.files?.length);
-    if (!input.files?.length) return;
+    if (!input.files?.length) {
+      const fallback = drop.classList.contains("chat-attach") ? "Фото" : drop.querySelector("span")?.dataset?.fallback || "Файл";
+      drop.querySelector("span").textContent = fallback;
+      return;
+    }
     const label = input.multiple
       ? `${input.files.length} file(s): ${Array.from(input.files).slice(0, 2).map((f) => f.name).join(", ")}`
       : input.files[0].name;
     drop.querySelector("span").textContent = label;
-    updateJobSemantics();
   });
 }
 
@@ -157,6 +162,7 @@ async function selectProject(id, refreshList = true) {
   const project = await api(`/api/projects/${id}`);
   renderProjectMeta(project);
   renderHistory(project);
+  await loadChat();
   if (project.mesh_url) {
     await loadMesh(project.mesh_url);
     $("#viewer-empty").classList.add("hidden");
@@ -177,12 +183,155 @@ function renderProjectMeta(p) {
     useCurrent.disabled = !activeProjectHasMesh;
     if (!activeProjectHasMesh) useCurrent.checked = false;
   }
+  const hint = $("#chat-hint");
+  if (hint) {
+    hint.textContent = activeProjectHasMesh
+      ? "Есть модель: смысловая правка текстом, или приложите новый mesh. Фильтры — в Advanced."
+      : "Текст / фото → генерация. Можно сразу приложить готовый mesh (.stl/.obj).";
+  }
   $("#project-meta").innerHTML = `
     <p><strong>${p.name}</strong></p>
     <p class="muted">ID: ${p.id.slice(0, 8)}…</p>
     <p class="muted">Версия: v${p.current_version}</p>
     <p class="muted">${p.has_mesh ? "Модель загружена" : "Модель отсутствует"}</p>
   `;
+}
+
+function renderChat(state) {
+  const log = $("#chat-log");
+  if (!log) return;
+  const messages = state?.messages || [];
+  if (!messages.length) {
+    log.innerHTML = `<p class="muted chat-empty">${activeProjectHasMesh
+      ? "Опишите, что исправить в модели…"
+      : "Опишите объект для генерации…"}</p>`;
+  } else {
+    log.innerHTML = messages.map((m) => `
+      <div class="chat-bubble ${m.role === "user" ? "user" : "assistant"}">
+        <div class="chat-bubble-role">${m.role === "user" ? "Вы" : "MeshForge"}</div>
+        <div class="chat-bubble-text">${escapeHtml(m.content)}</div>
+      </div>
+    `).join("");
+  }
+  log.scrollTop = log.scrollHeight;
+
+  const draftBox = $("#chat-draft");
+  const draftText = $("#chat-draft-text");
+  const draftLabel = draftBox?.querySelector(".chat-draft-label");
+  const brief = (state?.edit_brief_en || "").trim();
+  const draft = (state?.draft_prompt_en || "").trim();
+  const show = !!(state?.ready && (brief || draft || (state?.intent === "create" && !draft && messages.length)));
+  if (draftBox && draftText) {
+    if (state?.ready && (brief || draft)) {
+      draftBox.classList.remove("hidden");
+      if (draftLabel) {
+        draftLabel.textContent = brief
+          ? "Brief для перегенерации (ComfyUI)"
+          : "Промпт для ComfyUI";
+      }
+      draftText.textContent = brief || draft;
+    } else if (state?.ready && state?.intent === "create" && !draft) {
+      draftBox.classList.remove("hidden");
+      if (draftLabel) draftLabel.textContent = "Готово к реконструкции из фото";
+      draftText.textContent = state.user_prompt || "Images → mesh";
+    } else {
+      draftBox.classList.add("hidden");
+      draftText.textContent = "";
+    }
+  }
+}
+
+function escapeHtml(text) {
+  return String(text || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+async function loadChat() {
+  if (!activeProjectId) return;
+  try {
+    const state = await api(`/api/projects/${activeProjectId}/chat`);
+    renderChat(state);
+  } catch (e) {
+    console.warn("chat", e);
+    renderChat({ messages: [] });
+  }
+}
+
+async function sendChatMessage() {
+  if (!activeProjectId) return toast("Выберите проект", "error");
+  const text = ($("#chat-input").value || "").trim();
+  const images = Array.from($("#chat-images").files || []);
+  const meshFile = $("#chat-mesh")?.files?.[0];
+  if (!text && !images.length && !meshFile) {
+    return toast("Введите сообщение, приложите фото или mesh", "error");
+  }
+
+  // Mesh attach: import into project (cleanup/light), then optional chat text/photos.
+  if (meshFile) {
+    const fd = new FormData();
+    fd.append("prompt", "");
+    fd.append("mesh", meshFile);
+    fd.append("use_current_mesh", false);
+    fd.append("backend", "comfyui");
+    fd.append("remove_bg", $("#job-rmbg")?.checked ?? true);
+    fd.append("solidify_mm", $("#job-solid")?.value || "0");
+    fd.append("mode", $("#job-mode")?.value || "light");
+    fd.append("smooth_iters", $("#job-smooth")?.value || "1");
+    const imported = await runOp("Импорт mesh…", () =>
+      api(`/api/projects/${activeProjectId}/jobs`, { method: "POST", body: fd })
+    );
+    clearChatMesh();
+    if (!imported || (!text && !images.length)) return;
+  }
+
+  const fd = new FormData();
+  fd.append("text", text);
+  images.forEach((file) => fd.append("images", file));
+
+  setLoading(true, "LLM…");
+  try {
+    const state = await api(`/api/projects/${activeProjectId}/chat/messages`, { method: "POST", body: fd });
+    $("#chat-input").value = "";
+    const imagesInput = $("#chat-images");
+    if (imagesInput) imagesInput.value = "";
+    const drop = $("#chat-images-drop");
+    if (drop) {
+      drop.classList.remove("has-file");
+      drop.querySelector("span").textContent = "Фото";
+    }
+    renderChat(state);
+  } catch (e) {
+    toast(e.message?.slice(0, 200) || String(e), "error");
+  } finally {
+    setLoading(false);
+  }
+}
+
+function clearChatMesh() {
+  const meshInput = $("#chat-mesh");
+  if (meshInput) meshInput.value = "";
+  const drop = $("#chat-mesh-drop");
+  if (drop) {
+    drop.classList.remove("has-file");
+    drop.querySelector("span").textContent = "Mesh";
+  }
+}
+
+async function confirmChat() {
+  if (!activeProjectId) return toast("Выберите проект", "error");
+  const fd = new FormData();
+  fd.append("solidify_mm", $("#job-solid")?.value || "0");
+  fd.append("mode", $("#job-mode")?.value || "light");
+  fd.append("smooth_iters", $("#job-smooth")?.value || "1");
+  fd.append("remove_bg", $("#job-rmbg")?.checked ?? true);
+  runOp("ComfyUI…", async () => {
+    const result = await api(`/api/projects/${activeProjectId}/chat/confirm`, { method: "POST", body: fd });
+    await loadChat();
+    return result;
+  });
 }
 
 function renderHistory(p) {
@@ -219,44 +368,7 @@ function afterOperation(result) {
     $("#btn-download").href = result.project.mesh_url;
   }
   loadProjects(activeProjectId);
-}
-
-function buildJobLabel() {
-  const hasText = !!$("#job-prompt").value.trim();
-  const imageCount = $("#job-images").files?.length || 0;
-  const hasMesh = !!$("#job-mesh").files?.[0] || $("#job-use-current").checked;
-  if (hasMesh && (hasText || imageCount)) return "Мультимодальная правка…";
-  if (hasMesh) return "Очистка mesh…";
-  if (hasText && imageCount) return "Текст + фото → 3D…";
-  if (imageCount) return "Фото → 3D…";
-  return "Текст → ComfyUI mesh…";
-}
-
-function updateJobSemantics() {
-  const promptInput = $("#job-prompt");
-  const imagesInput = $("#job-images");
-  const meshInput = $("#job-mesh");
-  const useCurrentInput = $("#job-use-current");
-  const prompt = !!(promptInput?.value || "").trim();
-  const imageCount = imagesInput?.files?.length || 0;
-  const uploadedMesh = !!meshInput?.files?.[0];
-  const useCurrent = !!useCurrentInput?.checked;
-  const pipelineHint = $("#job-pipeline-hint");
-
-  const textOnly = prompt && !imageCount && !uploadedMesh && !useCurrent;
-  const imageBased = imageCount > 0 && !uploadedMesh && !useCurrent;
-
-  if (textOnly) {
-    if (pipelineHint) pipelineHint.textContent = "Text-only: ComfyUI text→mesh (concept → views → mesh → finalize).";
-  } else if (imageBased && prompt) {
-    if (pipelineHint) pipelineHint.textContent = "Текст + фото: ComfyUI images→mesh, описание сохраняется в историю.";
-  } else if (imageBased) {
-    if (pipelineHint) pipelineHint.textContent = "Фото: ComfyUI images→mesh (1 кадр или до 4 ракурсов).";
-  } else if (uploadedMesh || useCurrent) {
-    if (pipelineHint) pipelineHint.textContent = "Mesh-edit / cleanup без реконструкции.";
-  } else {
-    if (pipelineHint) pipelineHint.textContent = "Text и фото идут через ComfyUI: text→mesh или images→mesh.";
-  }
+  loadChat();
 }
 
 async function initLLM() {
@@ -295,20 +407,26 @@ function bindActions() {
     toast(`Создан: ${p.name}`);
   });
 
-  $("#btn-run-job").addEventListener("click", () => {
-    const prompt = $("#job-prompt").value.trim();
-    const imageFiles = Array.from($("#job-images").files || []);
+  $("#btn-chat-send")?.addEventListener("click", () => sendChatMessage());
+  $("#btn-chat-confirm")?.addEventListener("click", () => confirmChat());
+  $("#chat-input")?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendChatMessage();
+    }
+  });
+  $("#toggle-advanced")?.addEventListener("click", () => $("#advanced-body").classList.toggle("hidden"));
+  $("#btn-run-cleanup")?.addEventListener("click", () => {
     const meshFile = $("#job-mesh").files?.[0];
     const useCurrent = $("#job-use-current").checked;
-    if (!prompt && !imageFiles.length && !meshFile && !useCurrent) {
-      return toast("Добавьте текст, фото или mesh", "error");
+    if (!meshFile && !useCurrent) {
+      return toast("Выберите mesh или текущую модель", "error");
     }
     if (useCurrent && !activeProjectHasMesh) {
       return toast("В проекте пока нет текущей модели", "error");
     }
     const fd = new FormData();
-    fd.append("prompt", prompt);
-    imageFiles.forEach((file) => fd.append("images", file));
+    fd.append("prompt", "");
     if (meshFile) fd.append("mesh", meshFile);
     fd.append("use_current_mesh", useCurrent);
     fd.append("backend", "comfyui");
@@ -316,12 +434,8 @@ function bindActions() {
     fd.append("solidify_mm", $("#job-solid").value);
     fd.append("mode", $("#job-mode").value);
     fd.append("smooth_iters", $("#job-smooth").value);
-    runOp(buildJobLabel(), () => api(`/api/projects/${activeProjectId}/jobs`, { method: "POST", body: fd }));
+    runOp("Cleanup…", () => api(`/api/projects/${activeProjectId}/jobs`, { method: "POST", body: fd }));
   });
-
-  $("#job-prompt").addEventListener("input", updateJobSemantics);
-  $("#job-use-current").addEventListener("change", updateJobSemantics);
-  $("#job-mesh").addEventListener("change", updateJobSemantics);
 
   $("#btn-shade").addEventListener("click", () => {
     viewer.setWireframe(false);
@@ -341,6 +455,33 @@ function bindActions() {
   $("#btn-reset-cam").addEventListener("click", () => viewer.resetCamera());
 
   $("#toggle-settings").addEventListener("click", () => $("#settings-body").classList.toggle("hidden"));
+  $("#toggle-gen-settings")?.addEventListener("click", () => $("#gen-settings-body").classList.toggle("hidden"));
+  $("#btn-gen-save")?.addEventListener("click", async () => {
+    const quality_preset = $("#gen-quality").value;
+    setLoading(true, quality_preset === "quality"
+      ? "Сохранение + загрузка checkpoints (может занять несколько минут)…"
+      : "Сохранение…");
+    try {
+      const data = await api("/api/settings/generation", {
+        method: "PUT",
+        body: JSON.stringify({ quality_preset, download_missing: true }),
+      });
+      renderGenerationSettings(data);
+      if (data.downloaded_checkpoints?.length) {
+        toast(`Скачано: ${data.downloaded_checkpoints.join(", ")}`);
+      } else if (data.missing_checkpoints?.length) {
+        toast(`Не хватает: ${data.missing_checkpoints.join(", ")}`, "error");
+      } else {
+        toast(quality_preset === "quality" ? "Quality готов" : "Draft сохранён");
+      }
+      loadStatus();
+    } catch (e) {
+      toast(e.message?.slice(0, 240) || String(e), "error");
+      initGeneration().catch(() => {});
+    } finally {
+      setLoading(false);
+    }
+  });
   $("#btn-llm-refresh").addEventListener("click", () => refreshLLMModels().catch((e) => toast(e.message, "error")));
   $("#btn-llm-save").addEventListener("click", async () => {
     try {
@@ -360,16 +501,55 @@ function bindActions() {
   });
 }
 
+function renderGenerationSettings(data) {
+  const sel = $("#gen-quality");
+  if (sel && data.quality_preset) sel.value = data.quality_preset;
+  const active = data.active || {};
+  const activeEl = $("#gen-active");
+  if (activeEl) {
+    activeEl.textContent = [
+      `views: ${active.checkpoint || "—"}`,
+      `  steps=${active.steps} cfg=${active.cfg}`,
+      `mesh: ${active.mesh_checkpoint || "—"}`,
+      `  steps=${active.mesh_steps} cfg=${active.mesh_cfg}`,
+    ].join("\n");
+  }
+  const miss = $("#gen-missing");
+  if (miss) {
+    const missing = data.missing_checkpoints || [];
+    const errs = data.download_errors || [];
+    if (missing.length) {
+      miss.textContent = `Нет файлов: ${missing.join(", ")}. Нажмите «Сохранить» — скачаю автоматически (~5–10 ГБ).`;
+    } else if (errs.length) {
+      miss.textContent = errs.join("; ");
+    } else {
+      miss.textContent = data.downloaded_checkpoints?.length
+        ? `Скачано: ${data.downloaded_checkpoints.join(", ")}`
+        : "";
+    }
+  }
+}
+
+async function initGeneration() {
+  try {
+    const data = await api("/api/settings/generation");
+    renderGenerationSettings(data);
+  } catch (e) {
+    console.warn("generation settings", e);
+  }
+}
+
 async function init() {
   viewer = new MeshViewer($("#viewer-canvas"));
   bindRanges();
-  bindFileDrop("#job-images", "#job-images-drop");
+  bindFileDrop("#chat-images", "#chat-images-drop");
+  bindFileDrop("#chat-mesh", "#chat-mesh-drop");
   bindFileDrop("#job-mesh", "#job-mesh-drop");
   bindActions();
-  updateJobSemantics();
   await loadStatus();
   await loadProjects();
   await initLLM();
+  await initGeneration();
 }
 
 init().catch((e) => toast(e.message, "error"));

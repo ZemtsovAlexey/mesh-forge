@@ -13,6 +13,9 @@ class JobOptions:
     smooth_iters: int = 1
     use_current_mesh: bool = False
     view_count: int = 4
+    user_prompt: str = ""
+    generation_prompt: str = ""
+    semantic_regen: bool = False
 
 
 @dataclass

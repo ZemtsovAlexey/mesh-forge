@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -8,13 +9,13 @@ from typing import Any
 import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
+logger = logging.getLogger("mesh_forge.config")
 
 
 def _find_config() -> Path:
     candidates = [
         Path(os.environ.get("MESHFORGE_CONFIG", "")),
         ROOT / "config.yaml",
-        Path("C:/AI/mesh-forge/config.yaml"),
     ]
     for path in candidates:
         if path and path.is_file():
@@ -33,7 +34,6 @@ class LLMConfig:
 
 @dataclass
 class PathsConfig:
-    blender: str = ""
     openscad: str = ""
     projects: str = ""
 
@@ -46,7 +46,7 @@ class ServerConfig:
 
 @dataclass
 class GPUConfig:
-    vram_gb: int = 8
+    vram_gb: int = 0
     sequential_models: bool = True
 
 
@@ -58,7 +58,9 @@ class ComfyUIConfig:
     text_to_multiview_workflow: str = ""
     multiview_to_mesh_workflow: str = ""
     image_to_mesh_workflow: str = ""
-    install_dir: str = "C:/AI/ComfyUI"
+    install_dir: str = ""
+    # draft = turbo models (fast); quality = full MV + SDXL base (slower, cleaner)
+    quality_preset: str = "draft"
     checkpoint: str = "sd_xl_turbo_1.0_fp16.safetensors"
     mesh_checkpoint: str = "hunyuan3d-dit-v2-mv-turbo_fp16.safetensors"
     image_checkpoint: str = "hunyuan3d-dit-v2-mv-turbo_fp16.safetensors"
@@ -80,6 +82,13 @@ class ComfyUIConfig:
 class PhotoConfig:
     # Scale reconstructed nets to this longest-axis size (mm)
     target_height_mm: float = 160.0
+    # Post-process after ComfyUI reconstruction (reduces spikes/holes)
+    finalize_target_faces: int = 120_000
+    finalize_smooth_iters: int = 3
+    finalize_min_edge_mm: float = 0.08
+    finalize_close_holes: bool = True
+    # If still open after repair, voxel remesh (mm). 0 = disable.
+    finalize_voxel_mm: float = 1.0
 
 
 @dataclass
@@ -171,9 +180,8 @@ def save_config(config: AppConfig) -> Path:
     }
     if config.paths.projects or data.get("paths"):
         paths = dict(data.get("paths") or {})
+        paths.pop("blender", None)
         paths.pop("triposr", None)
-        if config.paths.blender:
-            paths["blender"] = config.paths.blender
         if config.paths.openscad:
             paths["openscad"] = config.paths.openscad
         if config.paths.projects:
@@ -197,6 +205,7 @@ def save_config(config: AppConfig) -> Path:
         "text_to_multiview_workflow": config.comfyui.text_to_multiview_workflow or str(config.comfyui_text_to_multiview_workflow_path),
         "multiview_to_mesh_workflow": config.comfyui.multiview_to_mesh_workflow or str(config.comfyui_multiview_to_mesh_workflow_path),
         "image_to_mesh_workflow": config.comfyui.image_to_mesh_workflow or str(config.comfyui_image_to_mesh_workflow_path),
+        "quality_preset": config.comfyui.quality_preset,
         "checkpoint": config.comfyui.checkpoint,
         "mesh_checkpoint": config.comfyui.mesh_checkpoint,
         "image_checkpoint": config.comfyui.image_checkpoint,
@@ -215,6 +224,11 @@ def save_config(config: AppConfig) -> Path:
     }
     data["photo"] = {
         "target_height_mm": config.photo.target_height_mm,
+        "finalize_target_faces": config.photo.finalize_target_faces,
+        "finalize_smooth_iters": config.photo.finalize_smooth_iters,
+        "finalize_min_edge_mm": config.photo.finalize_min_edge_mm,
+        "finalize_close_holes": config.photo.finalize_close_holes,
+        "finalize_voxel_mm": config.photo.finalize_voxel_mm,
     }
 
     cfg_path.parent.mkdir(parents=True, exist_ok=True)
@@ -243,3 +257,209 @@ def update_llm_settings(
         config.llm.vision_model = vision_model
     save_config(config)
     return config
+
+
+QUALITY_PRESETS: dict[str, dict[str, Any]] = {
+    "draft": {
+        "label": "Draft (turbo, fast)",
+        "checkpoint": "sd_xl_turbo_1.0_fp16.safetensors",
+        "mesh_checkpoint": "hunyuan3d-dit-v2-mv-turbo_fp16.safetensors",
+        "image_checkpoint": "hunyuan3d-dit-v2-mv-turbo_fp16.safetensors",
+        "steps": 8,
+        "cfg": 1.5,
+        "mesh_steps": 20,
+        "mesh_cfg": 4.0,
+        "mesh_guidance": 3.5,
+    },
+    "quality": {
+        "label": "Quality (full MV + SDXL, slower)",
+        "checkpoint": "sd_xl_base_1.0_0.9vae.safetensors",
+        "mesh_checkpoint": "hunyuan3d-dit-v2-mv_fp16.safetensors",
+        "image_checkpoint": "hunyuan3d-dit-v2-mv_fp16.safetensors",
+        "steps": 28,
+        "cfg": 5.5,
+        "mesh_steps": 30,
+        "mesh_cfg": 5.0,
+        "mesh_guidance": 5.0,
+    },
+}
+
+CHECKPOINT_DOWNLOAD_URLS: dict[str, str] = {
+    "sd_xl_turbo_1.0_fp16.safetensors": (
+        "https://huggingface.co/stabilityai/sdxl-turbo/resolve/main/sd_xl_turbo_1.0_fp16.safetensors"
+    ),
+    "sd_xl_base_1.0_0.9vae.safetensors": (
+        "https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0/resolve/main/"
+        "sd_xl_base_1.0_0.9vae.safetensors"
+    ),
+    "hunyuan3d-dit-v2-mv-turbo_fp16.safetensors": (
+        "https://huggingface.co/Comfy-Org/hunyuan3D_2.0_repackaged/resolve/main/split_files/"
+        "hunyuan3d-dit-v2-mv-turbo_fp16.safetensors"
+    ),
+    "hunyuan3d-dit-v2-mv_fp16.safetensors": (
+        "https://huggingface.co/Comfy-Org/hunyuan3D_2.0_repackaged/resolve/main/split_files/"
+        "hunyuan3d-dit-v2-mv_fp16.safetensors"
+    ),
+}
+
+
+def apply_quality_preset(config: AppConfig, preset: str) -> AppConfig:
+    key = (preset or "draft").strip().lower()
+    if key not in QUALITY_PRESETS:
+        raise ValueError(f"Unknown quality preset: {preset}. Use draft|quality")
+    values = QUALITY_PRESETS[key]
+    config.comfyui.quality_preset = key
+    for field_name, value in values.items():
+        if field_name == "label":
+            continue
+        setattr(config.comfyui, field_name, value)
+    return config
+
+
+def comfyui_checkpoints_dir(config: AppConfig | None = None) -> Path | None:
+    cfg = config or load_config()
+    install = (cfg.comfyui.install_dir or "").strip()
+    if not install:
+        return None
+    root = Path(install)
+    candidates = [
+        root / "models" / "checkpoints",
+        root.parent / "ComfyUI" / "models" / "checkpoints",
+        root / "ComfyUI" / "models" / "checkpoints",
+    ]
+    for path in candidates:
+        if path.is_dir():
+            return path
+    return candidates[0]
+
+
+def missing_comfyui_checkpoints(config: AppConfig | None = None) -> list[str]:
+    cfg = config or load_config()
+    ckpt_dir = comfyui_checkpoints_dir(cfg)
+    if ckpt_dir is None:
+        return []
+    needed = {
+        cfg.comfyui.checkpoint,
+        cfg.comfyui.mesh_checkpoint,
+        cfg.comfyui.image_checkpoint,
+    }
+    missing = []
+    for name in sorted(needed):
+        if name and not (ckpt_dir / name).is_file():
+            missing.append(name)
+    return missing
+
+
+def download_comfyui_checkpoints(
+    names: list[str] | None = None,
+    *,
+    config: AppConfig | None = None,
+) -> dict[str, Any]:
+    """Download missing ComfyUI checkpoints into models/checkpoints."""
+    import httpx
+
+    cfg = config or load_config()
+    ckpt_dir = comfyui_checkpoints_dir(cfg)
+    if ckpt_dir is None:
+        raise RuntimeError(
+            "comfyui.install_dir is not set — cannot download checkpoints. "
+            "Set it in config.yaml (e.g. C:/AI/ComfyUI_windows_portable/ComfyUI)."
+        )
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    wanted = list(names) if names is not None else missing_comfyui_checkpoints(cfg)
+    downloaded: list[str] = []
+    skipped: list[str] = []
+    errors: list[str] = []
+
+    for name in wanted:
+        dest = ckpt_dir / name
+        if dest.is_file() and dest.stat().st_size > 1_000_000:
+            skipped.append(name)
+            continue
+        url = CHECKPOINT_DOWNLOAD_URLS.get(name)
+        if not url:
+            errors.append(f"{name}: no download URL configured")
+            continue
+        part = dest.with_suffix(dest.suffix + ".part")
+        logger.info("Downloading checkpoint %s -> %s", name, dest)
+        try:
+            with httpx.stream("GET", url, follow_redirects=True, timeout=None) as response:
+                response.raise_for_status()
+                total = int(response.headers.get("content-length") or 0)
+                done = 0
+                with part.open("wb") as out:
+                    for chunk in response.iter_bytes(1024 * 1024):
+                        out.write(chunk)
+                        done += len(chunk)
+                        if total and done % (50 * 1024 * 1024) < 1024 * 1024:
+                            pct = 100.0 * done / total
+                            logger.info(
+                                "  %s: %.0f%% (%d / %d MB)",
+                                name,
+                                pct,
+                                done // 1_000_000,
+                                total // 1_000_000,
+                            )
+            part.replace(dest)
+            downloaded.append(name)
+            logger.info("Saved checkpoint %s (%d bytes)", name, dest.stat().st_size)
+        except Exception as exc:
+            if part.is_file():
+                part.unlink(missing_ok=True)
+            errors.append(f"{name}: {exc}")
+            logger.exception("Failed to download %s", name)
+
+    return {
+        "checkpoint_dir": str(ckpt_dir),
+        "downloaded": downloaded,
+        "skipped": skipped,
+        "errors": errors,
+        "missing_checkpoints": missing_comfyui_checkpoints(cfg),
+    }
+
+
+def update_generation_settings(*, quality_preset: str) -> AppConfig:
+    config = load_config()
+    apply_quality_preset(config, quality_preset)
+    save_config(config)
+    return config
+
+
+def generation_settings_payload(
+    config: AppConfig | None = None,
+    *,
+    download_report: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    cfg = config or load_config()
+    preset = (cfg.comfyui.quality_preset or "draft").lower()
+    if preset not in QUALITY_PRESETS:
+        preset = "draft"
+    payload = {
+        "quality_preset": preset,
+        "presets": {
+            key: {
+                "label": val["label"],
+                "checkpoint": val["checkpoint"],
+                "mesh_checkpoint": val["mesh_checkpoint"],
+                "steps": val["steps"],
+                "cfg": val["cfg"],
+                "mesh_steps": val["mesh_steps"],
+            }
+            for key, val in QUALITY_PRESETS.items()
+        },
+        "active": {
+            "checkpoint": cfg.comfyui.checkpoint,
+            "mesh_checkpoint": cfg.comfyui.mesh_checkpoint,
+            "image_checkpoint": cfg.comfyui.image_checkpoint,
+            "steps": cfg.comfyui.steps,
+            "cfg": cfg.comfyui.cfg,
+            "mesh_steps": cfg.comfyui.mesh_steps,
+            "mesh_cfg": cfg.comfyui.mesh_cfg,
+            "mesh_guidance": cfg.comfyui.mesh_guidance,
+        },
+        "missing_checkpoints": missing_comfyui_checkpoints(cfg),
+        "downloaded_checkpoints": list((download_report or {}).get("downloaded") or []),
+        "download_errors": list((download_report or {}).get("errors") or []),
+    }
+    return payload
