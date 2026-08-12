@@ -115,12 +115,22 @@ html, body {
   margin-bottom: 12px;
 }
 
+.panel-head-stack {
+  display: block;
+}
+
 .panel h2 {
   font-size: 0.72rem;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.1em;
   color: var(--text-muted);
+}
+
+.section-copy {
+  margin-top: 8px;
+  color: var(--text-muted);
+  line-height: 1.5;
 }
 
 .new-project {
@@ -212,6 +222,18 @@ textarea { resize: vertical; min-height: 72px; }
 
 .tab-panel { display: none; }
 .tab-panel.active { display: flex; flex-direction: column; gap: 12px; }
+
+.job-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
 
 .file-drop {
   display: flex;
@@ -486,4 +508,5 @@ textarea { resize: vertical; min-height: 72px; }
   .sidebar-left { grid-row: 2; max-height: 40vh; }
   .viewport-wrap { grid-row: 3; min-height: 50vh; }
   .sidebar-right { grid-row: 4; max-height: 35vh; }
+  .field-grid { grid-template-columns: 1fr; }
 }

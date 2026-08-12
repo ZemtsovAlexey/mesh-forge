@@ -1,20 +1,20 @@
-﻿# MeshForge — план проекта
+# MeshForge — план проекта
 
 Локальный пайплайн «фото / скан / текст → 3D-модель → 3D-печать» с веб-UI.
 
 ## Архитектура
 
-- **Клиент (Z13):** браузер, Blender, слайсер
-- **Сервер (DESKTOP-HOME):** LM Studio, TripoSR, PyMeshLab, Blender headless
-- **LLM:** LM Studio (OpenAI-compatible API), удалённо на сервере
+- **Клиент:** браузер (с любой машины в LAN)
+- **Сервер (DESKTOP-HOME):** LM Studio, ComfyUI, MeshForge, Blender headless
+- **LLM:** LM Studio (OpenAI-compatible API) на сервере
 
 ## Три ветки создания
 
 | Ветка | Вход | Инструмент |
 |-------|------|------------|
-| 1. Фото | JPG/PNG | TripoSR → Blender QC |
+| 1. Фото | JPG/PNG | ComfyUI Hunyuan MV → Blender QC |
 | 2. Скан | STL/OBJ | PyMeshLab / Poisson → Blender |
-| 3. Текст | промпт | OpenSCAD+LLM / TRELLIS |
+| 3. Текст | промпт | ComfyUI text→views→mesh |
 
 ## Редактирование
 
@@ -27,11 +27,10 @@
 ## Фазы разработки
 
 ### Фаза 0 — Инфраструктура ✅ (частично)
-- [x] SSH-доступ Z13 → DESKTOP-HOME
-- [x] Скрипты развёртывания (`deploy/`)
-- [x] Установка серверного стека (Python, PyTorch, TripoSR)
+- [x] Локальные скрипты (`scripts/setup.ps1`, `start-comfyui.ps1`, `run.ps1`)
+- [x] Установка серверного стека (Python, ComfyUI)
 - [ ] LM Studio + модели
-- [ ] MeshForge app.py + UI
+- [x] MeshForge FastAPI + UI
 
 ### Фаза 1 — UI каркас
 - [ ] Gradio: проекты, создать, редактировать, история, экспорт
@@ -42,12 +41,12 @@
 - [ ] Blender watertight QC
 
 ### Фаза 3 — Branch 1: Фото
-- [ ] TripoSR adapter
+- [ ] ComfyUI image→mesh
 - [ ] rembg
 
 ### Фаза 4 — Branch 3: Текст
-- [ ] OpenSCAD + LM Studio
-- [ ] TRELLIS (опционально)
+- [ ] ComfyUI text→views→mesh
+- [ ] OpenSCAD + LM Studio (опционально)
 
 ### Фаза 5 — Редактирование
 - [ ] LLM planner (LM Studio API)
@@ -59,68 +58,32 @@
 
 ---
 
-## Фаза 0.5 — Скрипты повторного развёртывания ✅
-
-**Цель:** воспроизводимая установка «с нуля» за 2 команды.
-
-### Структура `deploy/`
-
-```
-deploy/
-├── README.md                    # Подробная инструкция
-├── deploy.config.json           # host, user, ports (не в git)
-├── deploy.config.example.json   # шаблон
-├── lib/
-│   └── Remote.ps1               # SSH helpers (encoded PowerShell)
-└── scripts/
-    ├── 01-bootstrap-ssh-server.ps1
-    ├── 02-copy-ssh-key.ps1
-    ├── 03-install-server.ps1
-    ├── 04-deploy-remote.ps1
-    ├── 05-verify-deployment.ps1
-    └── 06-redeploy.ps1
-deploy.ps1                       # точка входа с Z13
-```
-
-### Сценарии
-
-| Сценарий | Команда |
-|----------|---------|
-| Первая установка | bootstrap (server) → `deploy.ps1 deploy` |
-| Обновить зависимости | `deploy.ps1 redeploy` |
-| Проверить состояние | `deploy.ps1 verify` |
-| Новый сервер | изменить `deploy.config.json` → bootstrap → deploy |
-
-### Планируемые скрипты (следующая итерация)
+## Локальные скрипты (`scripts/`)
 
 | Скрипт | Назначение |
 |--------|------------|
-| `07-deploy-app.ps1` | Только код приложения (без PyTorch) |
-| `08-start-services.ps1` | Запуск MeshForge API + проверка LM Studio |
-| `09-backup-projects.ps1` | Бэкап `C:\AI\mesh-forge\projects` |
-| `10-restore-projects.ps1` | Восстановление проектов |
+| `setup.ps1` | venv MeshForge + ComfyUI + checkpoints |
+| `setup-comfyui.ps1` | только ComfyUI |
+| `start-comfyui.ps1` / `stop-comfyui.ps1` | управление ComfyUI |
+| `run.ps1` | FastAPI (`-WithComfyUI` опционально) |
 
-### Критерии готовности redeploy
-
-- [x] `deploy.config.json` с параметрами машин
-- [x] Bootstrap SSH + firewall документирован
-- [x] Установка по SSH без ручного копирования файлов
-- [x] `06-redeploy.ps1` для повторного развёртывания
-- [x] `05-verify-deployment.ps1` проверяет SSH, CUDA, LM Studio
-- [ ] `07-deploy-app.ps1` для обновления только UI
-- [ ] CI-подобный чеклист в README
+```powershell
+.\scripts\setup.ps1
+.\scripts\start-comfyui.ps1
+.\scripts\run.ps1
+```
 
 ---
 
 ## Железо
 
-| | DESKTOP-HOME | Alexey (Z13) |
-|--|--------------|--------------|
-| GPU | RTX 3070 Ti 8GB | Radeon 8060S |
-| RAM | 32 GB | 32 GB |
-| Роль | Compute + LM Studio | UI client |
+| | DESKTOP-HOME |
+|--|--------------|
+| GPU | RTX 3070 Ti 8GB |
+| RAM | 32 GB |
+| Роль | Compute + LM Studio + MeshForge |
 
 ## Документация
 
-- [deploy/README.md](deploy/README.md) — развёртывание и redeploy
+- [README.md](README.md) — быстрый старт
 - [PLAN.md](PLAN.md) — этот файл

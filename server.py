@@ -20,14 +20,14 @@ def main() -> None:
     log_level = os.environ.get("MESHFORGE_LOG_LEVEL", "info").lower()
     logger.info(
         "Starting MeshForge on %s:%s (projects=%s)",
-        cfg.server.host,
-        cfg.server.port,
+        os.environ.get("MESHFORGE_HOST", cfg.server.host),
+        int(os.environ.get("MESHFORGE_PORT", cfg.server.port)),
         cfg.projects_dir,
     )
     uvicorn.run(
         "api.main:app",
-        host=cfg.server.host,
-        port=cfg.server.port,
+        host=os.environ.get("MESHFORGE_HOST", cfg.server.host),
+        port=int(os.environ.get("MESHFORGE_PORT", cfg.server.port)),
         reload=False,
         log_level=log_level,
     )

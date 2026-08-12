@@ -44,61 +44,33 @@
       </section>
 
       <section class="panel">
-        <div class="tabs" role="tablist">
-          <button class="tab active" data-tab="photo">Фото</button>
-          <button class="tab" data-tab="scan">Скан</button>
-          <button class="tab" data-tab="text">Текст</button>
-          <button class="tab" data-tab="edit">Правка</button>
-        </div>
-
-        <div class="tab-panel active" id="tab-photo">
-          <label class="file-drop" id="photo-drop">
-            <input type="file" id="photo-file" accept="image/*" hidden />
-            <span>Загрузить фото</span>
-          </label>
-          <label class="field">Модель
-            <select id="photo-backend">
-              <option value="hunyuan3d" selected>Hunyuan3D-2mini</option>
-              <option value="triposr">TripoSR</option>
-            </select>
-          </label>
-          <label class="check"><input type="checkbox" id="photo-rmbg" checked /> Убрать фон</label>
-          <label class="field">Solidify (мм)<input type="range" id="photo-solid" min="0" max="5" step="0.5" value="0" /><output id="photo-solid-val">0</output></label>
-          <button class="btn primary block" id="btn-photo">Сгенерировать 3D</button>
-        </div>
-
-        <div class="tab-panel" id="tab-scan">
-          <label class="file-drop">
-            <input type="file" id="scan-file" accept=".stl,.obj" hidden />
-            <span>STL / OBJ</span>
-          </label>
-          <label class="field">Режим
-            <select id="scan-mode"><option value="light">Light</option><option value="rebuild">Rebuild</option></select>
-          </label>
-          <label class="field">Smooth<input type="range" id="scan-smooth" min="0" max="5" step="1" value="1" /><output id="scan-smooth-val">1</output></label>
-          <label class="field">Solidify (мм)<input type="range" id="scan-solid" min="0" max="5" step="0.5" value="0" /><output id="scan-solid-val">0</output></label>
-          <button class="btn primary block" id="btn-scan">Очистить скан</button>
-        </div>
-
-        <div class="tab-panel" id="tab-text">
-          <label class="field">Описание<textarea id="text-prompt" rows="4" placeholder="Коробка 80×50×30 мм, отверстие 6 мм"></textarea></label>
-          <label class="field">Режим
-            <select id="text-mode"><option value="mechanical">Mechanical</option><option value="organic">Organic</option></select>
-          </label>
-          <button class="btn primary block" id="btn-text">Сгенерировать</button>
-        </div>
-
-        <div class="tab-panel" id="tab-edit">
-          <label class="field">Инструкция<textarea id="edit-instr" rows="3" placeholder="Высота 100 мм, толще основание"></textarea></label>
-          <label class="file-drop small">
-            <input type="file" id="edit-ref" accept="image/*" hidden />
-            <span>Референс (опц.)</span>
-          </label>
-          <label class="field">Solidify (мм)<input type="range" id="edit-solid" min="0" max="5" step="0.5" value="0" /><output id="edit-solid-val">0</output></label>
-          <div class="btn-row">
-            <button class="btn" id="btn-edit-text">Текст</button>
-            <button class="btn" id="btn-edit-photo">Фото</button>
+        <div class="panel-head panel-head-stack">
+          <div>
+            <h2>Подготовить модель</h2>
+            <p class="section-copy">Текст, набор фото и готовый mesh можно комбинировать в одном задании.</p>
           </div>
+        </div>
+        <div class="job-form">
+          <label class="field">Описание
+            <textarea id="job-prompt" rows="4" placeholder="Например: настольная фигурка кота, широкое основание, без тонких выступов"></textarea>
+          </label>
+          <p class="muted" id="job-pipeline-hint">Text и фото идут через ComfyUI: text→mesh или images→mesh.</p>
+          <label class="file-drop" id="job-images-drop">
+            <input type="file" id="job-images" accept="image/*" multiple hidden />
+            <span>Фото или референсы (можно несколько)</span>
+          </label>
+          <label class="file-drop small" id="job-mesh-drop">
+            <input type="file" id="job-mesh" accept=".stl,.obj" hidden />
+            <span>Готовый mesh (опционально)</span>
+          </label>
+          <label class="check"><input type="checkbox" id="job-use-current" /> Использовать текущую модель проекта как основу</label>
+          <label class="field">Cleanup
+            <select id="job-mode"><option value="light">Light</option><option value="rebuild">Rebuild</option></select>
+          </label>
+          <label class="check"><input type="checkbox" id="job-rmbg" checked /> Убирать фон у фото</label>
+          <label class="field">Smooth<input type="range" id="job-smooth" min="0" max="5" step="1" value="1" /><output id="job-smooth-val">1</output></label>
+          <label class="field">Solidify (мм)<input type="range" id="job-solid" min="0" max="5" step="0.5" value="0" /><output id="job-solid-val">0</output></label>
+          <button class="btn primary block" id="btn-run-job">Запустить pipeline</button>
         </div>
       </section>
     </aside>

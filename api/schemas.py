@@ -12,12 +12,21 @@ class ProjectSummary(BaseModel):
     has_mesh: bool
 
 
+class ArtifactInfo(BaseModel):
+    kind: str
+    path: str
+    label: str
+    stage: str = ""
+    source: str = ""
+
+
 class VersionInfo(BaseModel):
     version: int
     branch: str
     action: str
     instruction: str | None = None
     qc: dict[str, Any] | None = None
+    artifacts: list[ArtifactInfo] = Field(default_factory=list)
     created_at: str
 
 
@@ -32,16 +41,6 @@ class ProjectDetail(BaseModel):
 
 class CreateProjectRequest(BaseModel):
     name: str = Field(min_length=1, max_length=120)
-
-
-class TextCreateRequest(BaseModel):
-    prompt: str = Field(min_length=1)
-    mode: str = "mechanical"
-
-
-class TextEditRequest(BaseModel):
-    instruction: str = Field(min_length=1)
-    solidify_mm: float = 0.0
 
 
 class OperationResult(BaseModel):

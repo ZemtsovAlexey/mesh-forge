@@ -35,7 +35,6 @@ class LLMConfig:
 class PathsConfig:
     blender: str = ""
     openscad: str = ""
-    triposr: str = ""
     projects: str = ""
 
 
@@ -52,23 +51,34 @@ class GPUConfig:
 
 
 @dataclass
-class DockerConfig:
+class ComfyUIConfig:
     enabled: bool = True
-    triposr_image: str = "meshforge/triposr:latest"
-    hunyuan_image: str = "meshforge/hunyuan3d:latest"
-    hunyuan_model: str = "tencent/Hunyuan3D-2mini"
-    hunyuan_subfolder: str = "hunyuan3d-dit-v2-mini-turbo"
-    hunyuan_steps: int = 20
-    hunyuan_octree: int = 256
-    hunyuan_chunks: int = 8000
-    hf_cache: str = ""
+    base_url: str = "http://127.0.0.1:8188"
+    workflow: str = ""
+    text_to_multiview_workflow: str = ""
+    multiview_to_mesh_workflow: str = ""
+    image_to_mesh_workflow: str = ""
+    install_dir: str = "C:/AI/ComfyUI"
+    checkpoint: str = "sd_xl_turbo_1.0_fp16.safetensors"
+    mesh_checkpoint: str = "hunyuan3d-dit-v2-mv-turbo_fp16.safetensors"
+    image_checkpoint: str = "hunyuan3d-dit-v2-mv-turbo_fp16.safetensors"
+    negative_prompt: str = "blurry, lowpoly, cropped, watermark, text, logo, frame"
+    width: int = 768
+    height: int = 768
+    steps: int = 8
+    cfg: float = 1.5
+    view_count: int = 4
+    mesh_resolution: int = 3072
+    mesh_steps: int = 20
+    mesh_cfg: float = 4.0
+    mesh_guidance: float = 3.5
+    mesh_octree_resolution: int = 256
+    mesh_num_chunks: int = 8000
 
 
 @dataclass
 class PhotoConfig:
-    # Default photo→3D backend: hunyuan3d | triposr
-    backend: str = "hunyuan3d"
-    # Hunyuan/TripoSR nets are ~unit-sized; scale longest axis to this (mm)
+    # Scale reconstructed nets to this longest-axis size (mm)
     target_height_mm: float = 160.0
 
 
@@ -78,7 +88,7 @@ class AppConfig:
     paths: PathsConfig = field(default_factory=PathsConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     gpu: GPUConfig = field(default_factory=GPUConfig)
-    docker: DockerConfig = field(default_factory=DockerConfig)
+    comfyui: ComfyUIConfig = field(default_factory=ComfyUIConfig)
     photo: PhotoConfig = field(default_factory=PhotoConfig)
     config_path: Path = field(default_factory=_find_config)
 
@@ -88,8 +98,23 @@ class AppConfig:
         return Path(raw)
 
     @property
-    def hf_cache_dir(self) -> Path:
-        raw = self.docker.hf_cache or str(ROOT / ".cache" / "huggingface")
+    def comfyui_workflow_path(self) -> Path:
+        raw = self.comfyui.workflow or str(ROOT / "mesh_forge" / "workflows" / "text_to_mesh.json")
+        return Path(raw)
+
+    @property
+    def comfyui_text_to_multiview_workflow_path(self) -> Path:
+        raw = self.comfyui.text_to_multiview_workflow or str(ROOT / "mesh_forge" / "workflows" / "text_to_multiview.json")
+        return Path(raw)
+
+    @property
+    def comfyui_multiview_to_mesh_workflow_path(self) -> Path:
+        raw = self.comfyui.multiview_to_mesh_workflow or str(ROOT / "mesh_forge" / "workflows" / "multiview_to_mesh.json")
+        return Path(raw)
+
+    @property
+    def comfyui_image_to_mesh_workflow_path(self) -> Path:
+        raw = self.comfyui.image_to_mesh_workflow or str(ROOT / "mesh_forge" / "workflows" / "image_to_mesh.json")
         return Path(raw)
 
     def resolve(self, key: str) -> Path | None:
@@ -107,13 +132,24 @@ def load_config(path: Path | None = None) -> AppConfig:
     with cfg_path.open(encoding="utf-8") as f:
         data: dict[str, Any] = yaml.safe_load(f) or {}
 
+    photo_raw = dict(data.get("photo") or {})
+    photo_raw.pop("backend", None)
+    comfy_raw = dict(data.get("comfyui") or {})
+    known_comfy = set(ComfyUIConfig.__dataclass_fields__)
+    comfy_raw = {k: v for k, v in comfy_raw.items() if k in known_comfy}
+    known_photo = set(PhotoConfig.__dataclass_fields__)
+    photo_raw = {k: v for k, v in photo_raw.items() if k in known_photo}
+    paths_raw = dict(data.get("paths") or {})
+    known_paths = set(PathsConfig.__dataclass_fields__)
+    paths_raw = {k: v for k, v in paths_raw.items() if k in known_paths}
+
     return AppConfig(
         llm=LLMConfig(**(data.get("llm") or {})),
-        paths=PathsConfig(**(data.get("paths") or {})),
+        paths=PathsConfig(**paths_raw),
         server=ServerConfig(**(data.get("server") or {})),
         gpu=GPUConfig(**(data.get("gpu") or {})),
-        docker=DockerConfig(**(data.get("docker") or {})),
-        photo=PhotoConfig(**(data.get("photo") or {})),
+        comfyui=ComfyUIConfig(**comfy_raw),
+        photo=PhotoConfig(**photo_raw),
         config_path=cfg_path,
     )
 
@@ -135,12 +171,11 @@ def save_config(config: AppConfig) -> Path:
     }
     if config.paths.projects or data.get("paths"):
         paths = dict(data.get("paths") or {})
+        paths.pop("triposr", None)
         if config.paths.blender:
             paths["blender"] = config.paths.blender
         if config.paths.openscad:
             paths["openscad"] = config.paths.openscad
-        if config.paths.triposr:
-            paths["triposr"] = config.paths.triposr
         if config.paths.projects:
             paths["projects"] = config.paths.projects
         data["paths"] = paths
@@ -153,19 +188,32 @@ def save_config(config: AppConfig) -> Path:
         "vram_gb": config.gpu.vram_gb,
         "sequential_models": config.gpu.sequential_models,
     }
-    data["docker"] = {
-        "enabled": config.docker.enabled,
-        "triposr_image": config.docker.triposr_image,
-        "hunyuan_image": config.docker.hunyuan_image,
-        "hunyuan_model": config.docker.hunyuan_model,
-        "hunyuan_subfolder": config.docker.hunyuan_subfolder,
-        "hunyuan_steps": config.docker.hunyuan_steps,
-        "hunyuan_octree": config.docker.hunyuan_octree,
-        "hunyuan_chunks": config.docker.hunyuan_chunks,
-        "hf_cache": config.docker.hf_cache or str(config.hf_cache_dir),
+    data.pop("docker", None)
+    data["comfyui"] = {
+        "enabled": config.comfyui.enabled,
+        "base_url": config.comfyui.base_url,
+        "install_dir": config.comfyui.install_dir,
+        "workflow": config.comfyui.workflow or str(config.comfyui_workflow_path),
+        "text_to_multiview_workflow": config.comfyui.text_to_multiview_workflow or str(config.comfyui_text_to_multiview_workflow_path),
+        "multiview_to_mesh_workflow": config.comfyui.multiview_to_mesh_workflow or str(config.comfyui_multiview_to_mesh_workflow_path),
+        "image_to_mesh_workflow": config.comfyui.image_to_mesh_workflow or str(config.comfyui_image_to_mesh_workflow_path),
+        "checkpoint": config.comfyui.checkpoint,
+        "mesh_checkpoint": config.comfyui.mesh_checkpoint,
+        "image_checkpoint": config.comfyui.image_checkpoint,
+        "negative_prompt": config.comfyui.negative_prompt,
+        "width": config.comfyui.width,
+        "height": config.comfyui.height,
+        "steps": config.comfyui.steps,
+        "cfg": config.comfyui.cfg,
+        "view_count": config.comfyui.view_count,
+        "mesh_resolution": config.comfyui.mesh_resolution,
+        "mesh_steps": config.comfyui.mesh_steps,
+        "mesh_cfg": config.comfyui.mesh_cfg,
+        "mesh_guidance": config.comfyui.mesh_guidance,
+        "mesh_octree_resolution": config.comfyui.mesh_octree_resolution,
+        "mesh_num_chunks": config.comfyui.mesh_num_chunks,
     }
     data["photo"] = {
-        "backend": config.photo.backend,
         "target_height_mm": config.photo.target_height_mm,
     }
 

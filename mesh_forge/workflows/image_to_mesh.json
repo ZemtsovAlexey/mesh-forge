@@ -1,0 +1,127 @@
+{
+  "1": {
+    "class_type": "ImageOnlyCheckpointLoader",
+    "inputs": {
+      "ckpt_name": "__IMAGE_CHECKPOINT__"
+    }
+  },
+  "2": {
+    "class_type": "ModelSamplingAuraFlow",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "shift": 1
+    }
+  },
+  "3": {
+    "class_type": "LoadImage",
+    "inputs": {
+      "image": "__FRONT_IMAGE__"
+    }
+  },
+  "4": {
+    "class_type": "CLIPVisionEncode",
+    "inputs": {
+      "clip_vision": [
+        "1",
+        1
+      ],
+      "image": [
+        "3",
+        0
+      ],
+      "crop": "center"
+    }
+  },
+  "5": {
+    "class_type": "Hunyuan3Dv2Conditioning",
+    "inputs": {
+      "clip_vision_output": [
+        "4",
+        0
+      ]
+    }
+  },
+  "6": {
+    "class_type": "FluxGuidance",
+    "inputs": {
+      "conditioning": [
+        "5",
+        0
+      ],
+      "guidance": "__MESH_GUIDANCE__"
+    }
+  },
+  "7": {
+    "class_type": "EmptyLatentHunyuan3Dv2",
+    "inputs": {
+      "resolution": "__MESH_RESOLUTION__",
+      "batch_size": 1
+    }
+  },
+  "8": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": [
+        "2",
+        0
+      ],
+      "seed": "__MESH_SEED__",
+      "steps": "__MESH_STEPS__",
+      "cfg": "__MESH_CFG__",
+      "sampler_name": "euler",
+      "scheduler": "normal",
+      "positive": [
+        "6",
+        0
+      ],
+      "negative": [
+        "5",
+        1
+      ],
+      "latent_image": [
+        "7",
+        0
+      ],
+      "denoise": 1
+    }
+  },
+  "9": {
+    "class_type": "VAEDecodeHunyuan3D",
+    "inputs": {
+      "samples": [
+        "8",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ],
+      "num_chunks": "__MESH_CHUNKS__",
+      "octree_resolution": "__MESH_OCTREE__"
+    }
+  },
+  "10": {
+    "class_type": "VoxelToMesh",
+    "inputs": {
+      "voxel": [
+        "9",
+        0
+      ],
+      "algorithm": "surface net",
+      "threshold": 0.6
+    }
+  },
+  "11": {
+    "class_type": "SaveGLB",
+    "inputs": {
+      "mesh": [
+        "10",
+        0
+      ],
+      "filename_prefix": "__MESH_OUTPUT__"
+    }
+  }
+}

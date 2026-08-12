@@ -13,6 +13,15 @@ from mesh_forge.mesh_qc import MeshStats, analyze_mesh
 
 
 @dataclass
+class ArtifactEntry:
+    kind: str
+    path: str
+    label: str
+    stage: str = ""
+    source: str = ""
+
+
+@dataclass
 class VersionEntry:
     version: int
     branch: str
@@ -22,6 +31,7 @@ class VersionEntry:
     ref: str | None = None
     ops: list[dict[str, Any]] = field(default_factory=list)
     qc: dict[str, Any] | None = None
+    artifacts: list[ArtifactEntry] = field(default_factory=list)
     created_at: str = field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
 
@@ -70,7 +80,14 @@ class ProjectManifest:
             raise FileNotFoundError(f"Project not found: {project_id}")
         with path.open(encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
-        versions = [VersionEntry(**v) for v in data.get("versions", [])]
+        versions: list[VersionEntry] = []
+        for raw_version in data.get("versions", []):
+            payload = dict(raw_version)
+            payload["artifacts"] = [
+                ArtifactEntry(**artifact)
+                for artifact in payload.get("artifacts", [])
+            ]
+            versions.append(VersionEntry(**payload))
         return cls(
             id=data["id"],
             name=data.get("name", project_id),
@@ -112,12 +129,33 @@ def add_version(
     ref: str | None = None,
     ops: list[dict[str, Any]] | None = None,
     ext: str = ".stl",
+    artifacts: list[dict[str, Any]] | None = None,
 ) -> VersionEntry:
     new_version = manifest.current_version + 1
     version_dir = manifest.version_dir(new_version)
     version_dir.mkdir(parents=True, exist_ok=True)
     dest = version_dir / f"mesh{ext}"
     shutil.copy2(mesh_src, dest)
+
+    artifact_entries: list[ArtifactEntry] = []
+    for artifact in artifacts or []:
+        artifact_path = Path(str(artifact["path"]))
+        artifact_label = str(artifact.get("label") or artifact_path.stem)
+        artifact_dir = version_dir / "artifacts"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        copied = artifact_dir / f"{artifact_label}{artifact_path.suffix.lower()}"
+        if artifact_path.resolve() != copied.resolve():
+            shutil.copy2(artifact_path, copied)
+        rel_artifact = str(copied.relative_to(manifest.root)).replace("\\", "/")
+        artifact_entries.append(
+            ArtifactEntry(
+                kind=str(artifact.get("kind") or "file"),
+                path=rel_artifact,
+                label=artifact_label,
+                stage=str(artifact.get("stage") or ""),
+                source=str(artifact.get("source") or ""),
+            )
+        )
 
     stats = analyze_mesh(dest)
     rel_mesh = str(dest.relative_to(manifest.root)).replace("\\", "/")
@@ -130,6 +168,7 @@ def add_version(
         ref=ref,
         ops=ops or [],
         qc=stats.to_dict(),
+        artifacts=artifact_entries,
     )
     manifest.current_version = new_version
     manifest.versions.append(entry)

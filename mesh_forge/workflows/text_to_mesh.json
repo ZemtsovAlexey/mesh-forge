@@ -1,0 +1,17 @@
+{
+  "stages": {
+    "text_to_multiview": "text_to_multiview.json",
+    "multiview_to_mesh": "multiview_to_mesh.json",
+    "image_to_mesh": "image_to_mesh.json"
+  },
+  "outputs": {
+    "views": {
+      "front": "21",
+      "left": "22",
+      "back": "23",
+      "right": "24"
+    },
+    "mesh": "17",
+    "image_mesh": "11"
+  }
+}

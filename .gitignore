@@ -1,18 +1,16 @@
 # MeshForge-specific
-deploy/deploy.config.json
 projects/
 config.yaml
 ui-stdout.log
 ui-stderr.log
 server-stdout.log
 server-stderr.log
-.deploy.zip
-venv-triposr/
 .cache/
-docker/buildx/
-docker-build.*
-docker-hunyuan-build.log
-docker-hunyuan-prefetch.log
+.runtime/
+tmp/
+temp/
+tmp_*/
+temp_*/
 v3-run.*
 v4-run.*
 .stdin-test.py

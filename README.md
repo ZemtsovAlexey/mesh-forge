@@ -1,42 +1,68 @@
-﻿# MeshForge
+# MeshForge
 
-3D-печать: фото / скан / текст → печатаемый STL. Локально, двухмашинная схема.
+Локальный сервер для подготовки печатаемых 3D-моделей из текста, набора фото и готового mesh в любой комбинации. Браузер — клиент, все сервисы работают на серверной машине.
+
+## Что умеет сейчас
+
+- единый pipeline `text / images / mesh -> STL`
+- text-to-3D через ComfyUI end-to-end (`text → named views → mesh`)
+- image-to-3D через ComfyUI (`1 фото` или `до 4 ракурсов`)
+- cleanup и редактирование существующего mesh
+- очередь GPU: тяжёлые задачи выполняются последовательно под 8 GB VRAM
 
 ## Быстрый старт
 
 ```powershell
-# На Z13 (клиент):
-cd Projects\mesh-forge
-copy deploy\deploy.config.example.json deploy\deploy.config.json
-.\deploy.ps1 verify      # проверить сервер
-.\deploy.ps1 redeploy    # переустановить стек
+cd C:\AI\mesh-forge
+.\scripts\setup.ps1
+.\scripts\start-comfyui.ps1
+.\scripts\run.ps1
 ```
 
-Подробнее: **[deploy/README.md](deploy/README.md)**
+Или одной командой с автозапуском ComfyUI:
 
-План разработки: **[PLAN.md](PLAN.md)**
-
-## Запуск UI
-
-**На сервере (DESKTOP-HOME):**
 ```powershell
-copy config.yaml.example config.yaml
-# заполните paths: blender, openscad, triposr
-C:\AI\mesh-forge\venv\Scripts\python.exe server.py
+.\scripts\run.ps1 -WithComfyUI
 ```
 
-Старый Gradio UI (deprecated): `python app.py`
+UI:
 
-**С Z13 — деплой кода на сервер:**
-```powershell
-.\deploy.ps1 deploy-app
+```text
+http://<server-ip>:7860
 ```
 
-UI: http://192.168.0.22:7860
+## Обязательные внешние сервисы
 
-## Текущий статус
+- `LM Studio` local server: `http://127.0.0.1:1234/v1`
+- `ComfyUI` API: `http://127.0.0.1:8188`
+- `Blender` для solidify / repair
 
-- ✅ SSH: `zemet@192.168.0.22`
-- ✅ Серверный стек (PyTorch CUDA, TripoSR, Blender, OpenSCAD)
-- ✅ MeshForge API + веб-UI (FastAPI, Three.js 3D viewer)
-- ⏳ LM Studio + модели (вручную на сервере)
+## ComfyUI
+
+`setup.ps1` ставит ComfyUI в `C:\AI\ComfyUI` (или `comfyui.install_dir` из config) и скачивает checkpoint’ы:
+
+- `sd_xl_turbo_1.0_fp16.safetensors` — text→views
+- `hunyuan3d-dit-v2-mv-turbo_fp16.safetensors` — photo/text multiview→mesh (одно фото: недостающие ракурсы = front)
+
+Процессы:
+
+- `.\scripts\start-comfyui.ps1` — поднять API и дождаться `/system_stats`
+- `.\scripts\stop-comfyui.ps1` — остановить tracked/listening процесс
+- pid/log: `.runtime/comfyui.pid`, `.runtime/comfyui.out.log`, `.runtime/comfyui.err.log`
+
+## Конфиг
+
+Первый запуск создаёт `config.yaml` из example. Проверь:
+
+- `paths.blender`
+- `paths.projects`
+- `llm.*`
+- `comfyui.install_dir`
+- `comfyui.*` checkpoints / workflow paths
+
+## Локальные скрипты
+
+- `scripts/setup.ps1` — venv MeshForge + ComfyUI + checkpoints
+- `scripts/setup-comfyui.ps1` — только ComfyUI
+- `scripts/start-comfyui.ps1` / `scripts/stop-comfyui.ps1`
+- `scripts/run.ps1` — FastAPI сервер (`-WithComfyUI` опционально)

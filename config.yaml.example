@@ -7,7 +7,6 @@ llm:
 paths:
   blender: C:/Program Files/Blender Foundation/Blender 4.5/blender.exe
   openscad: C:/Program Files/OpenSCAD/openscad.exe
-  triposr: C:/AI/TripoSR
   projects: C:/AI/mesh-forge/projects
 server:
   host: 0.0.0.0
@@ -15,16 +14,28 @@ server:
 gpu:
   vram_gb: 8
   sequential_models: true
-docker:
+comfyui:
   enabled: true
-  triposr_image: meshforge/triposr:latest
-  hunyuan_image: meshforge/hunyuan3d:latest
-  hunyuan_model: tencent/Hunyuan3D-2mini
-  hunyuan_subfolder: hunyuan3d-dit-v2-mini-turbo
-  hunyuan_steps: 20
-  hunyuan_octree: 256
-  hunyuan_chunks: 8000
-  hf_cache: C:/AI/mesh-forge/.cache/huggingface
+  base_url: http://127.0.0.1:8188
+  install_dir: C:/AI/ComfyUI
+  workflow: C:/AI/mesh-forge/mesh_forge/workflows/text_to_mesh.json
+  text_to_multiview_workflow: C:/AI/mesh-forge/mesh_forge/workflows/text_to_multiview.json
+  multiview_to_mesh_workflow: C:/AI/mesh-forge/mesh_forge/workflows/multiview_to_mesh.json
+  image_to_mesh_workflow: C:/AI/mesh-forge/mesh_forge/workflows/image_to_mesh.json
+  checkpoint: sd_xl_turbo_1.0_fp16.safetensors
+  mesh_checkpoint: hunyuan3d-dit-v2-mv-turbo_fp16.safetensors
+  image_checkpoint: hunyuan3d-dit-v2-mv-turbo_fp16.safetensors
+  negative_prompt: blurry, lowpoly, cropped, watermark, text, logo, frame
+  width: 768
+  height: 768
+  steps: 8
+  cfg: 1.5
+  view_count: 4
+  mesh_resolution: 3072
+  mesh_steps: 20
+  mesh_cfg: 4.0
+  mesh_guidance: 3.5
+  mesh_octree_resolution: 256
+  mesh_num_chunks: 8000
 photo:
-  backend: hunyuan3d
   target_height_mm: 160

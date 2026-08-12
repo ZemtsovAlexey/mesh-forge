@@ -14,18 +14,13 @@ from api.schemas import (
     ProgressInfo,
     ProjectDetail,
     ProjectSummary,
-    TextCreateRequest,
-    TextEditRequest,
 )
 from api.services import (
-    create_photo,
-    create_scan,
-    create_text,
-    edit_photo,
-    edit_text,
+    build_job,
     export_info,
     list_project_summaries,
     project_detail,
+    run_generation_job,
     save_upload_to_tmp,
 )
 from mesh_forge.manifest import create_project
@@ -97,121 +92,59 @@ def get_project_progress(project_id: str) -> ProgressInfo:
         )
 
 
-@router.post("/{project_id}/photo", response_model=OperationResult)
-async def post_photo(
+@router.post("/{project_id}/jobs", response_model=OperationResult)
+async def post_job(
     project_id: str,
-    image: UploadFile = File(...),
+    prompt: str = Form(""),
+    images: list[UploadFile] | None = File(None),
+    mesh: UploadFile | None = File(None),
+    use_current_mesh: bool = Form(False),
+    backend: str = Form("auto"),
     remove_bg: bool = Form(True),
     solidify_mm: float = Form(0.0),
-    backend: str = Form(""),
+    mode: str = Form("light"),
+    smooth_iters: int = Form(1),
 ) -> OperationResult:
     try:
         manifest = load_project(project_id)
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
-    suffix = Path(image.filename or "upload.png").suffix or ".png"
-    path = await run_in_threadpool(save_upload_to_tmp, image, suffix)
-    try:
-        def _do_photo():
-            return create_photo(
-                get_orchestrator(),
-                manifest,
-                path,
-                remove_bg=remove_bg,
-                solidify_mm=solidify_mm,
-                backend=backend or None,
-            )
+    image_paths: list[Path] = []
+    for upload in images or []:
+        if upload and upload.filename:
+            suffix = Path(upload.filename).suffix or ".png"
+            staged = await run_in_threadpool(save_upload_to_tmp, upload, suffix)
+            image_paths.append(staged)
 
-        return await run_in_threadpool(_do_photo)
+    source_mesh = None
+    if mesh and mesh.filename:
+        suffix = Path(mesh.filename).suffix or ".stl"
+        source_mesh = await run_in_threadpool(save_upload_to_tmp, mesh, suffix)
+    elif use_current_mesh:
+        source_mesh = manifest.current_mesh_path()
+
+    if not prompt.strip() and not image_paths and not source_mesh:
+        raise HTTPException(400, "Provide text, images, or a mesh")
+
+    job = build_job(
+        project_id=manifest.id,
+        prompt=prompt,
+        image_paths=image_paths,
+        source_mesh=source_mesh,
+        use_current_mesh=use_current_mesh,
+        backend=backend,
+        remove_bg=remove_bg,
+        solidify_mm=solidify_mm,
+        scan_mode=mode,
+        smooth_iters=smooth_iters,
+    )
+
+    try:
+        def _do_job():
+            return run_generation_job(get_orchestrator(), manifest, job)
+
+        return await run_in_threadpool(_do_job)
     except RuntimeError as exc:
         raise HTTPException(500, str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-
-
-@router.post("/{project_id}/scan", response_model=OperationResult)
-async def post_scan(
-    project_id: str,
-    scan: UploadFile = File(...),
-    mode: str = Form("light"),
-    smooth_iters: int = Form(1),
-    solidify_mm: float = Form(0.0),
-) -> OperationResult:
-    try:
-        manifest = load_project(project_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    suffix = Path(scan.filename or "upload.stl").suffix or ".stl"
-    path = await run_in_threadpool(save_upload_to_tmp, scan, suffix)
-    try:
-        def _do_scan():
-            return create_scan(
-                get_orchestrator(),
-                manifest,
-                path,
-                mode=mode,
-                smooth_iters=smooth_iters,
-                solidify_mm=solidify_mm,
-            )
-
-        return await run_in_threadpool(_do_scan)
-    except RuntimeError as exc:
-        raise HTTPException(500, str(exc)) from exc
-
-
-@router.post("/{project_id}/text", response_model=OperationResult)
-def post_text(project_id: str, body: TextCreateRequest) -> OperationResult:
-    try:
-        manifest = load_project(project_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    try:
-        return create_text(get_orchestrator(), manifest, body.prompt.strip(), body.mode)
-    except RuntimeError as exc:
-        raise HTTPException(500, str(exc)) from exc
-
-
-@router.post("/{project_id}/edit/text", response_model=OperationResult)
-def post_edit_text(project_id: str, body: TextEditRequest) -> OperationResult:
-    try:
-        manifest = load_project(project_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    try:
-        return edit_text(
-            get_orchestrator(),
-            manifest,
-            body.instruction.strip(),
-            body.solidify_mm,
-        )
-    except RuntimeError as exc:
-        raise HTTPException(500, str(exc)) from exc
-
-
-@router.post("/{project_id}/edit/photo", response_model=OperationResult)
-async def post_edit_photo(
-    project_id: str,
-    instruction: str = Form(""),
-    reference: UploadFile | None = File(None),
-) -> OperationResult:
-    try:
-        manifest = load_project(project_id)
-    except FileNotFoundError as exc:
-        raise HTTPException(404, str(exc)) from exc
-    ref_path = None
-    if reference and reference.filename:
-        ref_path = await run_in_threadpool(
-            save_upload_to_tmp, reference, Path(reference.filename).suffix or ".png"
-        )
-    try:
-        def _do_edit():
-            return edit_photo(
-                get_orchestrator(),
-                manifest,
-                instruction.strip() or "match reference",
-                ref_path,
-            )
-
-        return await run_in_threadpool(_do_edit)
-    except RuntimeError as exc:
-        raise HTTPException(500, str(exc)) from exc

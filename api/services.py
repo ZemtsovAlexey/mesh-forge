@@ -6,15 +6,16 @@ import tempfile
 import traceback
 from pathlib import Path
 
-from mesh_forge.config import load_config, update_llm_settings
-from mesh_forge.backends.lmstudio import LMStudioClient
-from mesh_forge.config import AppConfig, LLMConfig
+from mesh_forge.config import AppConfig, LLMConfig, load_config, update_llm_settings
+from mesh_forge.domain import GenerationJob, JobOptions
 from mesh_forge.manifest import ProjectManifest, list_projects
 from mesh_forge.mesh_qc import analyze_mesh, is_print_ready
 from mesh_forge.orchestrator import Orchestrator
 from mesh_forge import progress as prog
+from mesh_forge.adapters import LMStudioClient
 
 from api.schemas import (
+    ArtifactInfo,
     ExportInfo,
     LLMModelsResponse,
     LLMSettings,
@@ -52,6 +53,16 @@ def project_detail(manifest: ProjectManifest) -> ProjectDetail:
             action=v.action,
             instruction=v.instruction,
             qc=v.qc,
+            artifacts=[
+                ArtifactInfo(
+                    kind=artifact.kind,
+                    path=artifact.path,
+                    label=artifact.label,
+                    stage=artifact.stage,
+                    source=artifact.source,
+                )
+                for artifact in v.artifacts
+            ],
             created_at=v.created_at,
         )
         for v in manifest.versions
@@ -106,82 +117,22 @@ def run_safe(orch: Orchestrator, fn, *, operation: str, project_id: str) -> Oper
         raise RuntimeError(f"{exc}\n{detail}") from exc
 
 
-def create_photo(
+def run_generation_job(
     orch: Orchestrator,
     manifest: ProjectManifest,
-    image_path: Path,
-    *,
-    remove_bg: bool,
-    solidify_mm: float,
-    backend: str | None = None,
+    job: GenerationJob,
 ) -> OperationResult:
     def _run():
-        return orch.create_photo(
-            manifest,
-            image_path,
-            remove_bg=remove_bg,
-            solidify_mm=solidify_mm,
-            backend=backend,
-        )
+        return orch.run_job(manifest, job)
 
-    return run_safe(orch, _run, operation="photo", project_id=manifest.id)
-
-
-def create_scan(
-    orch: Orchestrator,
-    manifest: ProjectManifest,
-    scan_path: Path,
-    *,
-    mode: str,
-    smooth_iters: int,
-    solidify_mm: float,
-) -> OperationResult:
-    def _run():
-        return orch.create_scan(
-            manifest,
-            scan_path,
-            mode=mode,
-            smooth_iters=smooth_iters,
-            solidify_mm=solidify_mm,
-        )
-
-    return run_safe(orch, _run, operation="scan", project_id=manifest.id)
-
-
-def create_text(
-    orch: Orchestrator,
-    manifest: ProjectManifest,
-    prompt: str,
-    mode: str,
-) -> OperationResult:
-    def _run():
-        return orch.create_text(manifest, prompt, mode=mode)
-
-    return run_safe(orch, _run, operation="text", project_id=manifest.id)
-
-
-def edit_text(
-    orch: Orchestrator,
-    manifest: ProjectManifest,
-    instruction: str,
-    solidify_mm: float,
-) -> OperationResult:
-    def _run():
-        return orch.edit_text(manifest, instruction, apply_solidify=solidify_mm)
-
-    return run_safe(orch, _run, operation="edit_text", project_id=manifest.id)
-
-
-def edit_photo(
-    orch: Orchestrator,
-    manifest: ProjectManifest,
-    instruction: str,
-    ref_image: Path | None,
-) -> OperationResult:
-    def _run():
-        return orch.edit_photo(manifest, instruction, ref_image)
-
-    return run_safe(orch, _run, operation="edit_photo", project_id=manifest.id)
+    operation = "job"
+    if job.has_mesh():
+        operation = "edit" if (job.has_prompt() or job.has_images()) else "repair"
+    elif job.has_prompt() and not job.has_images():
+        operation = "text_to_mesh"
+    elif job.has_images():
+        operation = "image_to_3d"
+    return run_safe(orch, _run, operation=operation, project_id=manifest.id)
 
 
 def export_info(manifest: ProjectManifest) -> ExportInfo:
@@ -260,3 +211,34 @@ def save_upload_to_tmp(upload_file, suffix: str) -> Path:
         shutil.copyfileobj(upload_file.file, out)
     logger.debug("Saved upload to %s (%d bytes)", dest, dest.stat().st_size)
     return dest
+
+
+def build_job(
+    *,
+    project_id: str,
+    prompt: str = "",
+    image_paths: list[Path] | None = None,
+    source_mesh: Path | None = None,
+    use_current_mesh: bool = False,
+    backend: str = "auto",
+    remove_bg: bool = True,
+    solidify_mm: float = 0.0,
+    scan_mode: str = "light",
+    smooth_iters: int = 1,
+    view_count: int = 4,
+) -> GenerationJob:
+    return GenerationJob(
+        project_id=project_id,
+        prompt=prompt.strip(),
+        image_paths=image_paths or [],
+        source_mesh=source_mesh,
+        options=JobOptions(
+            backend=backend or "auto",
+            remove_bg=remove_bg,
+            solidify_mm=solidify_mm,
+            scan_mode=scan_mode,
+            smooth_iters=smooth_iters,
+            use_current_mesh=use_current_mesh,
+            view_count=view_count,
+        ),
+    )

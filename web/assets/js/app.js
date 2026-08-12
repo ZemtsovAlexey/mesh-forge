@@ -1,10 +1,16 @@
 import { MeshViewer } from "./viewer.js";
 
 const $ = (sel) => document.querySelector(sel);
-const $$ = (sel) => document.querySelectorAll(sel);
 
 let activeProjectId = null;
 let viewer = null;
+let activeProjectHasMesh = false;
+const STAGE_LABELS = {
+  concept: "ComfyUI: concept",
+  views: "ComfyUI: views",
+  mesh: "ComfyUI: mesh",
+  finalize: "Finalize",
+};
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -35,10 +41,11 @@ function setProgressUI(percent, stage, elapsedSec = null) {
   const bar = $("#progress-bar");
   const meta = $("#progress-meta");
   const pct = Math.max(0, Math.min(100, Number(percent) || 0));
+  const stageLabel = STAGE_LABELS[stage] || stage;
   if (bar) bar.style.width = `${pct}%`;
   const time = elapsedSec != null ? ` · ${Math.round(elapsedSec)}с` : "";
-  if (meta) meta.textContent = `${Math.round(pct)}%${time}${stage ? ` — ${stage}` : ""}`;
-  if (stage) $("#loading-text").textContent = stage;
+  if (meta) meta.textContent = `${Math.round(pct)}%${time}${stageLabel ? ` — ${stageLabel}` : ""}`;
+  if (stageLabel) $("#loading-text").textContent = stageLabel;
 }
 
 function setLoading(on, text = "Обработка…") {
@@ -84,21 +91,10 @@ async function runOp(label, fn) {
 }
 
 function bindRanges() {
-  [["photo-solid", "photo-solid-val"], ["scan-smooth", "scan-smooth-val"], ["scan-solid", "scan-solid-val"], ["edit-solid", "edit-solid-val"]].forEach(([id, out]) => {
+  [["job-smooth", "job-smooth-val"], ["job-solid", "job-solid-val"]].forEach(([id, out]) => {
     const input = $(`#${id}`);
     const output = $(`#${out}`);
     input?.addEventListener("input", () => { output.textContent = input.value; });
-  });
-}
-
-function bindTabs() {
-  $$(".tab").forEach((tab) => {
-    tab.addEventListener("click", () => {
-      $$(".tab").forEach((t) => t.classList.remove("active"));
-      $$(".tab-panel").forEach((p) => p.classList.remove("active"));
-      tab.classList.add("active");
-      $(`#tab-${tab.dataset.tab}`).classList.add("active");
-    });
   });
 }
 
@@ -108,7 +104,12 @@ function bindFileDrop(inputId, dropSelector) {
   if (!input || !drop) return;
   input.addEventListener("change", () => {
     drop.classList.toggle("has-file", !!input.files?.length);
-    if (input.files?.[0]) drop.querySelector("span").textContent = input.files[0].name;
+    if (!input.files?.length) return;
+    const label = input.multiple
+      ? `${input.files.length} file(s): ${Array.from(input.files).slice(0, 2).map((f) => f.name).join(", ")}`
+      : input.files[0].name;
+    drop.querySelector("span").textContent = label;
+    updateJobSemantics();
   });
 }
 
@@ -170,6 +171,12 @@ async function selectProject(id, refreshList = true) {
 }
 
 function renderProjectMeta(p) {
+  activeProjectHasMesh = !!p.has_mesh;
+  const useCurrent = $("#job-use-current");
+  if (useCurrent) {
+    useCurrent.disabled = !activeProjectHasMesh;
+    if (!activeProjectHasMesh) useCurrent.checked = false;
+  }
   $("#project-meta").innerHTML = `
     <p><strong>${p.name}</strong></p>
     <p class="muted">ID: ${p.id.slice(0, 8)}…</p>
@@ -186,7 +193,8 @@ function renderHistory(p) {
   }
   ul.innerHTML = p.versions.map((v) => `
     <li><strong>v${v.version}</strong> [${v.branch}] ${v.action}
-    ${v.instruction ? `<br><span>${v.instruction.slice(0, 80)}</span>` : ""}</li>
+    ${v.instruction ? `<br><span>${v.instruction.slice(0, 80)}</span>` : ""}
+    ${v.artifacts?.length ? `<br><span class="muted">${v.artifacts.map((a) => a.label).join(", ")}</span>` : ""}</li>
   `).join("");
 }
 
@@ -211,6 +219,44 @@ function afterOperation(result) {
     $("#btn-download").href = result.project.mesh_url;
   }
   loadProjects(activeProjectId);
+}
+
+function buildJobLabel() {
+  const hasText = !!$("#job-prompt").value.trim();
+  const imageCount = $("#job-images").files?.length || 0;
+  const hasMesh = !!$("#job-mesh").files?.[0] || $("#job-use-current").checked;
+  if (hasMesh && (hasText || imageCount)) return "Мультимодальная правка…";
+  if (hasMesh) return "Очистка mesh…";
+  if (hasText && imageCount) return "Текст + фото → 3D…";
+  if (imageCount) return "Фото → 3D…";
+  return "Текст → ComfyUI mesh…";
+}
+
+function updateJobSemantics() {
+  const promptInput = $("#job-prompt");
+  const imagesInput = $("#job-images");
+  const meshInput = $("#job-mesh");
+  const useCurrentInput = $("#job-use-current");
+  const prompt = !!(promptInput?.value || "").trim();
+  const imageCount = imagesInput?.files?.length || 0;
+  const uploadedMesh = !!meshInput?.files?.[0];
+  const useCurrent = !!useCurrentInput?.checked;
+  const pipelineHint = $("#job-pipeline-hint");
+
+  const textOnly = prompt && !imageCount && !uploadedMesh && !useCurrent;
+  const imageBased = imageCount > 0 && !uploadedMesh && !useCurrent;
+
+  if (textOnly) {
+    if (pipelineHint) pipelineHint.textContent = "Text-only: ComfyUI text→mesh (concept → views → mesh → finalize).";
+  } else if (imageBased && prompt) {
+    if (pipelineHint) pipelineHint.textContent = "Текст + фото: ComfyUI images→mesh, описание сохраняется в историю.";
+  } else if (imageBased) {
+    if (pipelineHint) pipelineHint.textContent = "Фото: ComfyUI images→mesh (1 кадр или до 4 ракурсов).";
+  } else if (uploadedMesh || useCurrent) {
+    if (pipelineHint) pipelineHint.textContent = "Mesh-edit / cleanup без реконструкции.";
+  } else {
+    if (pipelineHint) pipelineHint.textContent = "Text и фото идут через ComfyUI: text→mesh или images→mesh.";
+  }
 }
 
 async function initLLM() {
@@ -249,55 +295,33 @@ function bindActions() {
     toast(`Создан: ${p.name}`);
   });
 
-  $("#btn-photo").addEventListener("click", () => {
-    const file = $("#photo-file").files?.[0];
-    if (!file) return toast("Выберите фото", "error");
-    const backend = $("#photo-backend")?.value || "hunyuan3d";
+  $("#btn-run-job").addEventListener("click", () => {
+    const prompt = $("#job-prompt").value.trim();
+    const imageFiles = Array.from($("#job-images").files || []);
+    const meshFile = $("#job-mesh").files?.[0];
+    const useCurrent = $("#job-use-current").checked;
+    if (!prompt && !imageFiles.length && !meshFile && !useCurrent) {
+      return toast("Добавьте текст, фото или mesh", "error");
+    }
+    if (useCurrent && !activeProjectHasMesh) {
+      return toast("В проекте пока нет текущей модели", "error");
+    }
     const fd = new FormData();
-    fd.append("image", file);
-    fd.append("remove_bg", $("#photo-rmbg").checked);
-    fd.append("solidify_mm", $("#photo-solid").value);
-    fd.append("backend", backend);
-    const label = backend === "triposr" ? "TripoSR: фото → 3D…" : "Hunyuan3D: фото → 3D…";
-    runOp(label, () => api(`/api/projects/${activeProjectId}/photo`, { method: "POST", body: fd }));
+    fd.append("prompt", prompt);
+    imageFiles.forEach((file) => fd.append("images", file));
+    if (meshFile) fd.append("mesh", meshFile);
+    fd.append("use_current_mesh", useCurrent);
+    fd.append("backend", "comfyui");
+    fd.append("remove_bg", $("#job-rmbg").checked);
+    fd.append("solidify_mm", $("#job-solid").value);
+    fd.append("mode", $("#job-mode").value);
+    fd.append("smooth_iters", $("#job-smooth").value);
+    runOp(buildJobLabel(), () => api(`/api/projects/${activeProjectId}/jobs`, { method: "POST", body: fd }));
   });
 
-  $("#btn-scan").addEventListener("click", () => {
-    const file = $("#scan-file").files?.[0];
-    if (!file) return toast("Выберите файл", "error");
-    const fd = new FormData();
-    fd.append("scan", file);
-    fd.append("mode", $("#scan-mode").value);
-    fd.append("smooth_iters", $("#scan-smooth").value);
-    fd.append("solidify_mm", $("#scan-solid").value);
-    runOp("Обработка скана…", () => api(`/api/projects/${activeProjectId}/scan`, { method: "POST", body: fd }));
-  });
-
-  $("#btn-text").addEventListener("click", () => {
-    const prompt = $("#text-prompt").value.trim();
-    if (!prompt) return toast("Введите описание", "error");
-    runOp("Генерация по тексту…", () => api(`/api/projects/${activeProjectId}/text`, {
-      method: "POST",
-      body: JSON.stringify({ prompt, mode: $("#text-mode").value }),
-    }));
-  });
-
-  $("#btn-edit-text").addEventListener("click", () => {
-    const instruction = $("#edit-instr").value.trim();
-    if (!instruction) return toast("Введите инструкцию", "error");
-    runOp("Правка…", () => api(`/api/projects/${activeProjectId}/edit/text`, {
-      method: "POST",
-      body: JSON.stringify({ instruction, solidify_mm: parseFloat($("#edit-solid").value) }),
-    }));
-  });
-
-  $("#btn-edit-photo").addEventListener("click", () => {
-    const fd = new FormData();
-    fd.append("instruction", $("#edit-instr").value.trim() || "match reference");
-    const ref = $("#edit-ref").files?.[0];
-    if (ref) fd.append("reference", ref);
-    runOp("Правка по фото…", () => api(`/api/projects/${activeProjectId}/edit/photo`, { method: "POST", body: fd }));
-  });
+  $("#job-prompt").addEventListener("input", updateJobSemantics);
+  $("#job-use-current").addEventListener("change", updateJobSemantics);
+  $("#job-mesh").addEventListener("change", updateJobSemantics);
 
   $("#btn-shade").addEventListener("click", () => {
     viewer.setWireframe(false);
@@ -339,11 +363,10 @@ function bindActions() {
 async function init() {
   viewer = new MeshViewer($("#viewer-canvas"));
   bindRanges();
-  bindTabs();
-  bindFileDrop("#photo-file", "#photo-drop");
-  bindFileDrop("#scan-file");
-  bindFileDrop("#edit-ref");
+  bindFileDrop("#job-images", "#job-images-drop");
+  bindFileDrop("#job-mesh", "#job-mesh-drop");
   bindActions();
+  updateJobSemantics();
   await loadStatus();
   await loadProjects();
   await initLLM();
