@@ -1,0 +1,46 @@
+api/routes/projects.py
+  35236ead1e77e20f 197-203,205-207
+api/schemas.py
+  35236ead1e77e20f 89-100,104
+api/services.py
+  35236ead1e77e20f 25,31-32,185-207
+config.yaml.example
+  35236ead1e77e20f 15-16
+mesh_forge/adapters/comfyui_client.py
+  35236ead1e77e20f 73,124,209,253,337,548,591
+mesh_forge/backends/lmstudio.py
+  35236ead1e77e20f 54-65
+mesh_forge/progress.py
+  35236ead1e77e20f 3,9-17,46,80-81,88-89
+mesh_forge/runtime/__init__.py
+  35236ead1e77e20f 1,5-6
+mesh_forge/runtime/gpu_handoff.py
+  35236ead1e77e20f 1-134
+mesh_forge/runtime/gpu_scheduler.py
+  35236ead1e77e20f 3,6-8,11-34,40,44,60-67,69,71-85,91,96-100,102-105,107-129,131-177,181-182,185,187-225
+README.md
+  35236ead1e77e20f 11,86
+web/assets/js/app.js
+  35236ead1e77e20f 319-331
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "git-ai-lite-1.0.0",
+  "base_commit_sha": "8be91b5c32911955d246c301a89177c1ddb9f8aa",
+  "prompts": {
+    "35236ead1e77e20f": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "e1240393-0723-4776-9efd-9585b3e22f10",
+        "model": "grok-4.6"
+      },
+      "human_author": "╨Ч╨╡╨╝╤Ж╨╛╨▓ ╨Р╨╗╨╡╨║╤Б╨╡╨╣ <zemtsov@moedelo.org>",
+      "messages": [],
+      "total_additions": 640,
+      "total_deletions": 316,
+      "accepted_lines": 413,
+      "accepted_deletions": 48,
+      "overridden_lines": 227
+    }
+  }
+}
