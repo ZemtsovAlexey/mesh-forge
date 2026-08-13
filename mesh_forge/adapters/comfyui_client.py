@@ -4,6 +4,7 @@ import copy
 import json
 import logging
 import random
+import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -916,8 +917,16 @@ class ComfyUiClient:
         # Strip accidental "front view:" prefixes from chat drafts.
         for prefix in ("front:", "left:", "back:", "right:", "view:"):
             if text.lower().startswith(prefix):
-                text = text[len(prefix):].strip()
-        return text
+                text = text[len(prefix) :].strip()
+        # "for 3D printing" is output intent, not part of the scene — SD turns it into
+        # workshops, filament spools, tables, sewing kits.
+        text = re.sub(
+            r"\b(?:for\s+)?(?:3[dD][\s-]?print(?:ing|able)?(?:\s+\w+){0,2})\b",
+            " ",
+            text,
+        )
+        text = re.sub(r"\bдля\s+(?:3d[\s-]?)?печат\w*\b", " ", text, flags=re.IGNORECASE)
+        return re.sub(r"\s{2,}", " ", text).strip(" ,;.")
 
     def _view_style(self) -> str:
         style = (self.config.comfyui.view_style or "clay").strip().lower()
@@ -929,6 +938,7 @@ class ComfyUiClient:
             "inconsistent identity across views, morphing shape, disconnected floating parts, "
             "hands, people, text, watermark, logo, frame, cropped, cut off, "
             "landscape background, sky, grass, trees, fence, scenery, 2d illustration background, "
+            "filament spools, sewing thread, wooden table, workshop, crafts, "
             "side profile when front is required, three-quarter view when front is required"
         )
         if self._view_style() == "clay":

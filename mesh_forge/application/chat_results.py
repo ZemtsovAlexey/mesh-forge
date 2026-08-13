@@ -65,19 +65,6 @@ def _copy_into_media(manifest: ProjectManifest, msg_id: str, src: Path, filename
     return rel_to_project(manifest, dest)
 
 
-def _caption_path(path: Path, *, label: str = "", kind: str = "") -> str:
-    try:
-        from mesh_forge.adapters import LMStudioClient
-
-        ctx = f"метка={label}" if label else ""
-        if kind:
-            ctx = f"{ctx}; тип={kind}".strip("; ")
-        return LMStudioClient().describe_image(path, context=ctx)
-    except Exception as exc:
-        logger.warning("Vision caption failed for %s: %s", path, exc)
-        return ""
-
-
 def post_result_message(
     manifest: ProjectManifest,
     content: str,
@@ -86,27 +73,16 @@ def post_result_message(
     mesh_path: Path | None = None,
     kind: str = "result",
     ref_ids: list[str] | None = None,
-    caption_images: bool = True,
 ) -> ChatMessage:
     """Append an assistant result message; copy files so later redos cannot overwrite chat history."""
     msg_id = _new_message_id()
     artifacts: list[ChatArtifact] = []
-    captions: list[str] = []
-    # Caption only representative views to keep latency reasonable.
-    caption_labels = {"front", "preview", "photo"}
     for label, src, stage in images or []:
         if not src or not Path(src).is_file():
             continue
         suffix = Path(src).suffix or ".png"
         rel = _copy_into_media(manifest, msg_id, Path(src), f"{label}{suffix}")
-        caption = ""
-        if caption_images and (label in caption_labels or len(images or []) == 1):
-            caption = _caption_path(Path(src), label=label, kind=kind)
-            if caption:
-                captions.append(f"{label}: {caption}")
-        artifacts.append(
-            ChatArtifact(kind="image", label=label, path=rel, stage=stage, caption=caption)
-        )
+        artifacts.append(ChatArtifact(kind="image", label=label, path=rel, stage=stage))
 
     if mesh_path and Path(mesh_path).is_file():
         try:
@@ -115,18 +91,12 @@ def post_result_message(
             preview = manifest.root / "work" / "chat_media" / msg_id / "mesh_preview.png"
             preview.parent.mkdir(parents=True, exist_ok=True)
             render_mesh_preview(Path(mesh_path), preview)
-            mesh_caption = ""
-            if caption_images:
-                mesh_caption = _caption_path(preview, label="mesh_preview", kind="mesh")
-                if mesh_caption:
-                    captions.append(f"mesh: {mesh_caption}")
             artifacts.append(
                 ChatArtifact(
                     kind="mesh_preview",
                     label="preview",
                     path=rel_to_project(manifest, preview),
                     stage="mesh",
-                    caption=mesh_caption,
                 )
             )
         except Exception as exc:
@@ -136,9 +106,6 @@ def post_result_message(
         artifacts.append(ChatArtifact(kind="mesh", label="mesh", path=rel_mesh, stage="mesh"))
 
     body = (content or "").strip()
-    if captions:
-        # Keep captions in the message so the agent always sees them in history text too.
-        body = f"{body}\n\n[видение]\n" + "\n".join(f"- {c}" for c in captions)
 
     message = ChatMessage(
         id=msg_id,

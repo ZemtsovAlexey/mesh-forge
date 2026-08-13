@@ -26,7 +26,7 @@ class ChatArtifact:
     label: str
     path: str  # relative to project root
     stage: str = ""
-    caption: str = ""  # vision description for the agent
+    caption: str = ""  # cached look note for this image/mesh version
 
     def to_dict(self) -> dict[str, Any]:
         return {

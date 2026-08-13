@@ -302,6 +302,41 @@ Rules:
             ],
         ).strip()
 
+    def inspect_images(
+        self,
+        images: list[tuple[str, Path]],
+        *,
+        question: str = "",
+    ) -> str:
+        """On-demand VLM look for the chat agent (Russian)."""
+        parts: list[dict[str, Any]] = []
+        for label, path in images:
+            encoded = _encode_image(path)
+            if not encoded:
+                continue
+            mime, b64 = encoded
+            parts.append({"type": "text", "text": f"[image {label}]"})
+            parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+        if not parts:
+            return ""
+        prompt = (
+            "Ты глаза 3D-агента. Опиши то, что видишь, по-русски: объект, ракурс/поза, "
+            "стиль, пропорции, заметные дефекты, лишнее, соответствие запросу. "
+            "Без вступлений. Если кадров несколько — сначала общее, потом отличия по меткам."
+        )
+        focus = (question or "").strip()
+        if focus:
+            prompt += f"\nВопрос агента: {focus}"
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}, *parts]
+        try:
+            return self.chat(
+                self.config.llm.vision_model,
+                [{"role": "user", "content": content}],
+                temperature=0.2,
+            ).strip()
+        except Exception:
+            return ""
+
     def describe_image(
         self,
         image_path: Path | None = None,
@@ -310,20 +345,12 @@ Rules:
         context: str = "",
         mime: str = "image/png",
     ) -> str:
-        """Short vision caption for agent context (Russian)."""
-        b64 = image_b64
-        if not b64 and image_path and image_path.is_file():
-            raw = image_path.read_bytes()
-            b64 = base64.b64encode(raw).decode()
-            suffix = image_path.suffix.lower()
-            mime = {
-                ".jpg": "image/jpeg",
-                ".jpeg": "image/jpeg",
-                ".webp": "image/webp",
-                ".png": "image/png",
-            }.get(suffix, "image/png")
-        if not b64:
+        """Short vision caption for a single image (Russian)."""
+        if image_path and image_path.is_file() and not image_b64:
+            return self.inspect_images([(context or image_path.name, image_path)], question="")
+        if not image_b64:
             return ""
+        tmp_label = context or "image"
         hint = (context or "").strip()
         prompt = (
             "Кратко опиши изображение для 3D-агента (1–2 предложения по-русски): "
@@ -334,7 +361,7 @@ Rules:
             prompt += f"\nКонтекст: {hint}"
         content: list[dict[str, Any]] = [
             {"type": "text", "text": prompt},
-            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}},
         ]
         try:
             return self.chat(
@@ -400,6 +427,19 @@ Rules:
         return "\n".join(lines)
 
 
+def _encode_image(path: Path) -> tuple[str, str] | None:
+    if not path or not path.is_file():
+        return None
+    suffix = path.suffix.lower()
+    mime = {
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".png": "image/png",
+    }.get(suffix, "image/png")
+    return mime, base64.b64encode(path.read_bytes()).decode()
+
+
 def _parse_json_response(text: str) -> dict[str, Any]:
     text = text.strip()
     fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
@@ -416,7 +456,7 @@ _DRAFT_BOILERPLATE_RE = re.compile(
     r"watertight|manifold|multiview|identical character from all angles|"
     r"matte clay(?: material)?(?: finish)?|smooth closed surface|"
     r"no holes|no floating debris|photoreal fur|studio lighting|"
-    r"3d printable|printable (?:figurine|object)|clean silhouette|"
+    r"3d printable|printable (?:figurine|object)|for 3d print(?:ing)?|"
     r"suitable for (?:multiview )?reconstruction|simple geometric form|"
     r"optimized for 3d|clean manifold surface|closed surface without"
     r")\b[^.]*\.?",

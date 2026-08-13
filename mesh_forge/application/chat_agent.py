@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import base64
 import json
 import logging
 import uuid
@@ -31,10 +30,22 @@ from mesh_forge.render import render_mesh_preview
 
 logger = logging.getLogger("mesh_forge.chat_agent")
 
-MAX_TOOL_ROUNDS = 4
+MAX_TOOL_ROUNDS = 5
+MAX_LOOK_IMAGES = 4
+MAX_LOOK_NOTE = 1200
+LOOK_MESH_PREVIEW = "agent_look_mesh.png"
+LOOK_TOOL_NAMES = {
+    "look",
+    "look_at",
+    "look_at_mesh",
+    "look_at_views",
+    "look_at_photos",
+    "look_at_front",
+}
 
 AGENT_SYSTEM = """You are MeshForge, a local 3D mesh agent in chat (no UI buttons).
-You see full chat history, notebook, and live pipeline.
+You see full chat history, notebook, and live pipeline as TEXT only.
+You do NOT see images or the mesh unless you call look.
 Reply with ONLY valid JSON:
 {
   "assistant_message": "short reply in the user's language",
@@ -43,6 +54,7 @@ Reply with ONLY valid JSON:
 }
 
 Tools:
+- look {target?: "auto"|"mesh"|"front"|"views"|"photos", question?: str} — inspect visuals with the vision model. Use on a later turn when the user comments on appearance or attached photos. NEVER call look in the same turn as run_front / continue_pipeline / redo_step / run_photo_preview / run_pending_edit.
 - ask_user {questions: [str]} — clarify only
 - set_draft_prompt {prompt_en: str, ready?: bool} — internal EN subject for Comfy; if ready=true starts front.
   The EN text is NEVER shown to the user — translation is an internal front step.
@@ -64,18 +76,32 @@ Rules:
 - Never show English prompts, translations, or draft_prompt_en in assistant_message.
 - assistant_message is only short user-language talk (questions / status). When starting front, keep it empty or one short line like «Генерирую…» — the front result message will appear separately.
 - No "Generate/Next/Redo" buttons — YOU call run_*/continue/redo tools.
-- If subject is clear for a new object: set_draft_prompt ready=true (starts front).
+- If subject is clear for a new object: set_draft_prompt ready=true (starts front). Do not also call run_front or look in that same turn.
 - If user says дальше/ок/продолжай → continue_pipeline.
 - If user says переделай / сделай иначе → redo_step (optionally with new brief).
 - Results appear as separate chat messages with images/mesh preview; never overwrite history.
-- Image captions appear as [видение] in history — treat them as hints.
-- When images are attached to this turn (mesh preview / views / photos), LOOK at them — that is what the mesh/object looks like. Prefer attached images over captions.
-- Prefer one heavy run tool per turn.
+- After look, treat the observation as ground truth. It is saved on those images as message.look in history — reuse it. Call look again only if the latest result has no look (regenerated on a previous turn) or the user asks about a new visual detail.
+- Set done=false after look so you can act on it.
+- Prefer one heavy run tool per turn. After a generation tool, stop.
 """
 
 
 def _new_msg_id() -> str:
     return uuid.uuid4().hex[:10]
+
+
+def _clip_look_note(text: str, limit: int = MAX_LOOK_NOTE) -> str:
+    note = (text or "").strip()
+    if len(note) <= limit:
+        return note
+    return note[: limit - 1].rstrip() + "…"
+
+
+def _path_key(path: Path) -> str:
+    try:
+        return str(path.resolve())
+    except Exception:
+        return str(path)
 
 
 def _strip_en_draft_leak(message: str, draft_en: str) -> str:
@@ -193,7 +219,6 @@ class ChatAgentService:
                     manifest,
                     "⏹ Остановлено.",
                     kind="text",
-                    caption_images=False,
                 )
                 self._results_posted = True
             prog.finish(manifest.id, ok=False, error="Остановлено")
@@ -218,12 +243,12 @@ class ChatAgentService:
     ) -> dict[str, Any]:
         prog.raise_if_cancelled(manifest.id)
 
-        if text or ref_ids:
+        if text or ref_ids or has_images:
             state.messages.append(
                 ChatMessage(
                     id=_new_msg_id(),
                     role="user",
-                    content=text or "(ссылка на сообщение)",
+                    content=text or ("(фото)" if has_images else "(ссылка на сообщение)"),
                     ref_ids=list(ref_ids),
                 )
             )
@@ -233,20 +258,17 @@ class ChatAgentService:
                 else:
                     state.user_prompt = f"{state.user_prompt}\n{text}".strip()
 
-        # Photos → caption for agent context, then start preview (no confirm button)
-        if has_images and not has_mesh:
-            self._attach_upload_captions(manifest, state)
+        if has_images:
+            self._attach_upload_images(manifest, state)
             self.chat.save(manifest, state)
+
+        # Photos without a mesh → start preview (no confirm button).
+        if has_images and not has_mesh:
             obs = self._tool_run_photo_preview(manifest, state)
             if not self._results_posted:
                 state.assistant_message = obs
                 state.messages.append(ChatMessage(id=_new_msg_id(), role="assistant", content=obs))
             return self._finalize(manifest, state)
-
-        # Photos with existing mesh: still caption so agent can reason about the reference.
-        if has_images and has_mesh:
-            self._attach_upload_captions(manifest, state)
-            self.chat.save(manifest, state)
 
         forced = self._maybe_force_apply(manifest, state, text=text, ref_ids=ref_ids)
         if forced:
@@ -279,12 +301,24 @@ class ChatAgentService:
                     state.assistant_message = "Чем помочь с моделью?"
                 break
 
+            ran_look = False
             for call in tool_calls:
                 prog.raise_if_cancelled(manifest.id)
                 if not isinstance(call, dict):
                     continue
                 name = str(call.get("name") or "").strip()
                 args = call.get("args") if isinstance(call.get("args"), dict) else {}
+                if self._results_posted:
+                    tool_trace.append(
+                        {
+                            "name": name,
+                            "args": args,
+                            "result": "skipped: generation already posted",
+                        }
+                    )
+                    continue
+                if name.lower() in LOOK_TOOL_NAMES:
+                    ran_look = True
                 # Persist draft/intent before long Comfy runs
                 self.chat.save(manifest, state)
                 obs = self._run_tool(manifest, state, name, args, latest_text=text)
@@ -297,7 +331,9 @@ class ChatAgentService:
                     assistant_message,
                     state.draft_prompt_en,
                 )
-            if done or self._results_posted:
+            if self._results_posted:
+                break
+            if done and not ran_look:
                 break
 
         if not self._results_posted:
@@ -500,59 +536,344 @@ class ChatAgentService:
                     break
         return out
 
-    def _collect_vision_images(
+    def _visual_inventory(
         self,
         manifest: ProjectManifest,
         state: ChatState,
+    ) -> dict[str, Any]:
+        """What the look tool can inspect right now (paths stay server-side)."""
+        views: list[str] = []
+        photos: list[str] = []
+        has_front = False
+        has_mesh_preview = False
+        looked = {"mesh": False, "front": False, "views": False, "photos": False}
+        seen_views_msg = False
+        seen_mesh_msg = False
+        seen_front = False
+        seen_photos = False
+        for msg in reversed(state.messages):
+            view_arts: list[ChatArtifact] = []
+            mesh_arts: list[ChatArtifact] = []
+            front_arts: list[ChatArtifact] = []
+            photo_arts: list[ChatArtifact] = []
+            for art in msg.artifacts or []:
+                label = (art.label or "").lower()
+                if art.kind in {"mesh_preview", "mesh"}:
+                    mesh_arts.append(art)
+                    has_mesh_preview = has_mesh_preview or art.kind == "mesh_preview"
+                elif art.kind == "image":
+                    if label == "front" or art.stage == "front":
+                        has_front = True
+                        front_arts.append(art)
+                    if label in {"front", "left", "back", "right"} or art.stage == "views":
+                        if label not in views:
+                            views.append(label or art.stage)
+                        view_arts.append(art)
+                    if art.stage in {"upload", "photo"} or label.startswith("photo") or label in {
+                        "preview",
+                        "photo",
+                    }:
+                        if (art.label or label) not in photos:
+                            photos.append(art.label or label)
+                        photo_arts.append(art)
+            if not seen_views_msg and view_arts:
+                looked["views"] = any(bool((a.caption or "").strip()) for a in view_arts)
+                seen_views_msg = True
+            if not seen_mesh_msg and mesh_arts:
+                looked["mesh"] = any(bool((a.caption or "").strip()) for a in mesh_arts)
+                seen_mesh_msg = True
+            if not seen_front and front_arts:
+                looked["front"] = any(bool((a.caption or "").strip()) for a in front_arts)
+                seen_front = True
+            if not seen_photos and photo_arts:
+                looked["photos"] = any(bool((a.caption or "").strip()) for a in photo_arts)
+                seen_photos = True
+        latest_user = next((m for m in reversed(state.messages) if m.role == "user"), None)
+        new_photos = [
+            a.label or a.path
+            for a in (latest_user.artifacts if latest_user else [])
+            if a.kind == "image" and a.stage == "upload"
+        ]
+        mesh = manifest.current_mesh_path()
+        has_mesh = bool(mesh and mesh.is_file()) or has_mesh_preview
+        if has_mesh and not seen_mesh_msg:
+            looked["mesh"] = False
+        return {
+            "mesh": has_mesh,
+            "front": has_front,
+            "views": views[:4],
+            "photos": photos[:4],
+            "new_photos": new_photos,
+            "looked": looked,
+        }
+
+    def _pending_upload_paths(self, manifest: ProjectManifest) -> list[Path]:
+        upload_dir = manifest.root / "work" / "chat_uploads"
+        if not upload_dir.is_dir():
+            return []
+        return sorted([p for p in upload_dir.iterdir() if p.is_file()], key=lambda p: p.name)
+
+    def _artifact_abs(self, manifest: ProjectManifest, art: ChatArtifact) -> Path | None:
+        if not art.path:
+            return None
+        path = manifest.root / art.path
+        return path if path.is_file() else None
+
+    def _recent_chat_images(
+        self,
+        manifest: ProjectManifest,
+        state: ChatState,
+        *,
+        kinds: set[str] | None = None,
+        labels: set[str] | None = None,
+        stages: set[str] | None = None,
+        limit: int = MAX_LOOK_IMAGES,
+        one_message: bool = False,
     ) -> list[tuple[str, Path]]:
-        """Pick recent mesh/view/photo images for multimodal agent decide."""
         found: list[tuple[str, Path]] = []
         seen: set[str] = set()
-
-        def _add(label: str, path: Path) -> None:
-            key = str(path.resolve()) if path.is_file() else ""
-            if not key or key in seen:
-                return
-            seen.add(key)
-            found.append((label, path))
-
-        # Newest mesh_preview from chat artifacts
         for msg in reversed(state.messages):
+            msg_hits = 0
             for art in msg.artifacts or []:
-                if art.kind != "mesh_preview" or not art.path:
+                if kinds and art.kind not in kinds:
                     continue
-                _add(f"mesh_preview:{art.label or 'preview'}", manifest.root / art.path)
-            if any(lbl.startswith("mesh_preview:") for lbl, _ in found):
-                break
+                label = (art.label or "").lower()
+                if labels and label not in labels:
+                    continue
+                if stages and (art.stage or "") not in stages and label not in stages:
+                    continue
+                path = self._artifact_abs(manifest, art)
+                if path is None:
+                    continue
+                key = str(path.resolve())
+                if key in seen:
+                    continue
+                seen.add(key)
+                found.append((art.label or label or art.kind, path))
+                msg_hits += 1
+                if len(found) >= limit:
+                    return found
+            if one_message and msg_hits:
+                return found
+        return found
 
-        # Fresh render of current mesh if none in history
-        if not any(lbl.startswith("mesh_preview:") for lbl, _ in found):
+    def _resolve_look_images(
+        self,
+        manifest: ProjectManifest,
+        state: ChatState,
+        target: str,
+    ) -> tuple[str, list[tuple[str, Path]]]:
+        wanted = (target or "auto").strip().lower()
+        if wanted not in {"auto", "mesh", "front", "views", "photos"}:
+            wanted = "auto"
+        inventory = self._visual_inventory(manifest, state)
+        pending = self._pending_upload_paths(manifest)
+        combine_mesh_photos = False
+
+        if wanted == "auto":
+            if inventory.get("new_photos") and inventory["mesh"]:
+                wanted = "mesh"
+                combine_mesh_photos = True
+            elif inventory["mesh"]:
+                wanted = "mesh"
+            elif inventory["views"]:
+                wanted = "views"
+            elif inventory["front"]:
+                wanted = "front"
+            elif inventory.get("new_photos") or inventory["photos"] or pending:
+                wanted = "photos"
+            else:
+                wanted = "mesh"
+
+        images: list[tuple[str, Path]] = []
+        if wanted == "mesh":
             mesh = manifest.current_mesh_path()
             if mesh and mesh.is_file():
-                out = manifest.root / "work" / "chat_edit" / "agent_mesh_preview.png"
+                out = manifest.root / "work" / "chat_edit" / "agent_look_mesh.png"
                 try:
                     out.parent.mkdir(parents=True, exist_ok=True)
                     render_mesh_preview(mesh, out)
-                    _add("mesh_preview:current", out)
+                    images.append(("mesh", out))
                 except Exception as exc:
-                    logger.warning("Agent mesh preview render failed: %s", exc)
+                    logger.warning("Look mesh preview failed: %s", exc)
+            if not images:
+                images = self._recent_chat_images(
+                    manifest, state, kinds={"mesh_preview"}, limit=1
+                )
+            if combine_mesh_photos:
+                room = MAX_LOOK_IMAGES - len(images)
+                if room > 0:
+                    images.extend(self._photo_look_images(manifest, state, pending, limit=room))
+                wanted = "auto"
+        elif wanted == "front":
+            images = self._recent_chat_images(
+                manifest,
+                state,
+                kinds={"image"},
+                labels={"front"},
+                limit=1,
+            )
+            if not images:
+                images = self._recent_chat_images(
+                    manifest, state, kinds={"image"}, stages={"front"}, limit=1
+                )
+        elif wanted == "views":
+            images = self._recent_chat_images(
+                manifest,
+                state,
+                kinds={"image"},
+                labels={"front", "left", "back", "right"},
+                limit=MAX_LOOK_IMAGES,
+                one_message=True,
+            )
+            if not images:
+                images = self._recent_chat_images(
+                    manifest,
+                    state,
+                    kinds={"image"},
+                    stages={"views", "front"},
+                    limit=MAX_LOOK_IMAGES,
+                    one_message=True,
+                )
+        else:  # photos
+            images = self._photo_look_images(manifest, state, pending, limit=MAX_LOOK_IMAGES)
 
-        # Recent front / photo / upload views
-        for msg in reversed(state.messages[-10:]):
-            for art in msg.artifacts or []:
-                if art.kind != "image" or not art.path:
+        return wanted, images[:MAX_LOOK_IMAGES]
+
+    def _photo_look_images(
+        self,
+        manifest: ProjectManifest,
+        state: ChatState,
+        pending: list[Path],
+        *,
+        limit: int,
+    ) -> list[tuple[str, Path]]:
+        latest_user = next((m for m in reversed(state.messages) if m.role == "user"), None)
+        from_msg: list[tuple[str, Path]] = []
+        if latest_user:
+            for art in latest_user.artifacts or []:
+                if art.kind != "image" or art.stage != "upload":
                     continue
-                label = (art.label or "").lower()
-                if label in {"front", "preview", "photo", "photo_1", "image_1"} or art.stage in {
-                    "front",
-                    "photo",
-                    "upload",
-                }:
-                    _add(f"image:{art.label or label}", manifest.root / art.path)
-            if len(found) >= 4:
-                break
+                path = self._artifact_abs(manifest, art)
+                if path is None:
+                    continue
+                from_msg.append((art.label or path.name, path))
+                if len(from_msg) >= limit:
+                    return from_msg
+        if from_msg:
+            return from_msg[:limit]
+        images: list[tuple[str, Path]] = []
+        for idx, src in enumerate(pending, start=1):
+            if len(images) >= limit:
+                return images
+            images.append((f"photo_{idx}", src))
+        if len(images) < limit:
+            images.extend(
+                self._recent_chat_images(
+                    manifest,
+                    state,
+                    kinds={"image"},
+                    stages={"upload", "photo"},
+                    limit=limit - len(images),
+                )
+            )
+        return images[:limit]
 
-        return found[:4]
+    def _tool_look(
+        self,
+        manifest: ProjectManifest,
+        state: ChatState,
+        *,
+        target: str,
+        question: str,
+    ) -> str:
+        resolved, images = self._resolve_look_images(manifest, state, target)
+        available = self._visual_inventory(manifest, state)
+        if not images:
+            return json.dumps(
+                {"error": "nothing to look at", "target": resolved, "available": available},
+                ensure_ascii=False,
+            )
+        labels = {
+            "mesh": "mesh",
+            "front": "front",
+            "views": "проекции",
+            "photos": "фото",
+            "auto": "кадры",
+        }
+        prog.update(manifest.id, 8, f"Смотрю на {labels.get(resolved, resolved)}…")
+        try:
+            observation = self.llm.inspect_images(images, question=question)
+        except Exception as exc:
+            logger.warning("Look failed: %s", exc)
+            return json.dumps(
+                {"error": str(exc), "target": resolved, "seen": [label for label, _ in images]},
+                ensure_ascii=False,
+            )
+        if not observation:
+            return json.dumps(
+                {"error": "vision returned empty", "target": resolved, "seen": [label for label, _ in images]},
+                ensure_ascii=False,
+            )
+        note = _clip_look_note(observation)
+        self._remember_look(manifest, state, images, note)
+        self.chat.save(manifest, state)
+        return json.dumps(
+            {
+                "target": resolved,
+                "seen": [label for label, _ in images],
+                "observation": note,
+                "cached": True,
+            },
+            ensure_ascii=False,
+        )
+
+    def _remember_look(
+        self,
+        manifest: ProjectManifest,
+        state: ChatState,
+        images: list[tuple[str, Path]],
+        note: str,
+    ) -> None:
+        """Bind a look observation to the artifacts that were actually inspected."""
+        if not note:
+            return
+        looked_keys: set[str] = set()
+        mesh_looked = False
+        photos_looked = False
+        for label, path in images:
+            looked_keys.add(_path_key(path))
+            if label == "mesh" or path.name == LOOK_MESH_PREVIEW:
+                mesh_looked = True
+            if label.startswith("photo") or "chat_uploads" in path.parts:
+                photos_looked = True
+
+        for msg in state.messages:
+            for art in msg.artifacts or []:
+                if art.kind not in {"image", "mesh_preview", "mesh"}:
+                    continue
+                abs_path = self._artifact_abs(manifest, art)
+                if abs_path is None:
+                    continue
+                if _path_key(abs_path) in looked_keys:
+                    art.caption = note
+
+        if mesh_looked:
+            for msg in reversed(state.messages):
+                targets = [a for a in (msg.artifacts or []) if a.kind == "mesh_preview"]
+                if not targets:
+                    targets = [a for a in (msg.artifacts or []) if a.kind == "mesh"]
+                if targets:
+                    for art in targets:
+                        art.caption = note
+                    break
+
+        if photos_looked:
+            latest_user = next((m for m in reversed(state.messages) if m.role == "user"), None)
+            if latest_user:
+                for art in latest_user.artifacts or []:
+                    if art.kind == "image" and art.stage == "upload":
+                        art.caption = note
 
     def _decide(
         self,
@@ -574,18 +895,21 @@ class ChatAgentService:
             if m.ref_ids:
                 item["ref_ids"] = m.ref_ids
             if m.artifacts:
-                item["artifacts"] = [
-                    {
-                        "label": a.label,
-                        "kind": a.kind,
-                        "caption": a.caption,
-                    }
-                    for a in m.artifacts
-                    if a.kind in {"image", "mesh_preview"}
-                ]
+                arts_out: list[dict[str, str]] = []
+                looks: list[str] = []
+                for a in m.artifacts:
+                    if a.kind not in {"image", "mesh_preview", "mesh"}:
+                        continue
+                    arts_out.append({"label": a.label, "kind": a.kind})
+                    cap = (a.caption or "").strip()
+                    if cap and cap not in looks:
+                        looks.append(cap)
+                if arts_out:
+                    item["artifacts"] = arts_out
+                if looks:
+                    item["look"] = looks[0] if len(looks) == 1 else looks
             history.append(item)
 
-        vision_images = self._collect_vision_images(manifest, state)
         context = {
             "has_mesh": has_mesh,
             "mode": state.mode,
@@ -603,7 +927,7 @@ class ChatAgentService:
             },
             "notebook": notebook_summary_for_llm(manifest),
             "tool_results": tool_trace[-6:],
-            "attached_images": [label for label, _ in vision_images],
+            "visuals": self._visual_inventory(manifest, state),
         }
         user_blob = (
             "Context JSON:\n"
@@ -611,41 +935,17 @@ class ChatAgentService:
             + "\n\nChat history:\n"
             + json.dumps(history, ensure_ascii=False)
             + "\n\nDecide next assistant_message and optional tool_calls."
+            + " Call look only when the user asks about appearance or attached photos."
+            + " Do not look at a result you just generated; wait for the next user message."
+            + " message.look is a cached observation; visuals.looked says whether the latest files already have one."
         )
-        if vision_images:
-            user_blob += (
-                "\n\nAttached images below are what you can SEE "
-                "(mesh preview and/or views/photos). Use them as ground truth for shape/pose/defects."
-            )
 
         try:
-            if vision_images:
-                content: list[dict[str, Any]] = [{"type": "text", "text": user_blob}]
-                for label, path in vision_images:
-                    raw = path.read_bytes()
-                    b64 = base64.b64encode(raw).decode()
-                    suffix = path.suffix.lower()
-                    mime = {
-                        ".jpg": "image/jpeg",
-                        ".jpeg": "image/jpeg",
-                        ".webp": "image/webp",
-                        ".png": "image/png",
-                    }.get(suffix, "image/png")
-                    content.append({"type": "text", "text": f"[image {label}]"})
-                    content.append(
-                        {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}}
-                    )
-                model = self.llm.config.llm.vision_model
-                messages = [
-                    {"role": "system", "content": AGENT_SYSTEM},
-                    {"role": "user", "content": content},
-                ]
-            else:
-                model = self.llm.config.llm.planner_model
-                messages = [
-                    {"role": "system", "content": AGENT_SYSTEM},
-                    {"role": "user", "content": user_blob},
-                ]
+            model = self.llm.config.llm.planner_model
+            messages = [
+                {"role": "system", "content": AGENT_SYSTEM},
+                {"role": "user", "content": user_blob},
+            ]
 
             text = self.llm.chat(model, messages, temperature=0.2)
             from mesh_forge.backends.lmstudio import _parse_json_response
@@ -700,6 +1000,16 @@ class ChatAgentService:
         try:
             if name in {"noop", ""}:
                 return "ok"
+            if name in LOOK_TOOL_NAMES:
+                aliases = {
+                    "look_at_mesh": "mesh",
+                    "look_at_views": "views",
+                    "look_at_photos": "photos",
+                    "look_at_front": "front",
+                }
+                target = aliases.get(name) or str(args.get("target") or "auto").strip()
+                question = str(args.get("question") or args.get("focus") or latest_text or "").strip()
+                return self._tool_look(manifest, state, target=target, question=question)
             if name == "ask_user":
                 qs = [str(q).strip() for q in (args.get("questions") or []) if str(q).strip()][:3]
                 state.questions = qs
@@ -837,46 +1147,36 @@ class ChatAgentService:
             logger.exception("Tool %s failed", name)
             return f"error: {exc}"
 
-    def _attach_upload_captions(self, manifest: ProjectManifest, state: ChatState) -> None:
-        """Describe uploaded chat photos and attach captions to the latest user message."""
-        upload_dir = manifest.root / "work" / "chat_uploads"
-        if not upload_dir.is_dir():
-            return
-        paths = sorted([p for p in upload_dir.iterdir() if p.is_file()], key=lambda p: p.name)
+    def _attach_upload_images(self, manifest: ProjectManifest, state: ChatState) -> None:
+        """Copy uploaded chat photos onto the latest user message (no vision caption)."""
+        paths = self._pending_upload_paths(manifest)
         if not paths:
             return
         user_msg = next((m for m in reversed(state.messages) if m.role == "user"), None)
         if user_msg is None:
             return
-        from mesh_forge.application.chat_results import _caption_path, _copy_into_media
+        from mesh_forge.application.chat_results import _copy_into_media
 
-        captions: list[str] = []
         arts: list[ChatArtifact] = list(user_msg.artifacts or [])
+        existing = {(a.label, a.path) for a in arts}
         for idx, src in enumerate(paths, start=1):
             label = f"photo_{idx}"
             try:
-                rel = _copy_into_media(manifest, user_msg.id or _new_msg_id(), src, f"{label}{src.suffix or '.png'}")
+                rel = _copy_into_media(
+                    manifest, user_msg.id or _new_msg_id(), src, f"{label}{src.suffix or '.png'}"
+                )
             except Exception:
                 rel = ""
-            caption = _caption_path(src, label=label, kind="upload")
-            if caption:
-                captions.append(caption)
-            if rel:
+            if rel and (label, rel) not in existing:
                 arts.append(
                     ChatArtifact(
                         kind="image",
                         label=label,
                         path=rel,
                         stage="upload",
-                        caption=caption,
                     )
                 )
         user_msg.artifacts = arts
-        if captions:
-            block = "\n".join(f"- {c}" for c in captions)
-            extra = f"\n\n[видение фото]\n{block}"
-            if "[видение" not in (user_msg.content or ""):
-                user_msg.content = f"{(user_msg.content or '').rstrip()}{extra}".strip()
 
     def _copy_edit_state(self, state: ChatState, loaded: ChatState) -> None:
         state.intent = loaded.intent
@@ -893,13 +1193,14 @@ class ChatAgentService:
     def _tool_run_front(self, manifest: ProjectManifest, state: ChatState) -> str:
         from mesh_forge.application.stepped_pipeline import start_text_front
 
-        # Prefer the user's wording; English translation is done inside start_text_front.
         last_user = ""
         for m in reversed(state.messages):
             if m.role == "user" and (m.content or "").strip():
                 last_user = m.content.strip()
                 break
-        source = (last_user or state.user_prompt or state.draft_prompt_en or "").strip()
+        # Prefer the internal EN subject; raw chat often contains purpose words
+        # ("для 3d печати") that SD paints as a scene.
+        source = (state.draft_prompt_en or last_user or state.user_prompt or "").strip()
         if not source:
             return "error: empty subject"
         pipe = start_text_front(

@@ -576,11 +576,9 @@ function renderMessageArtifacts(artifacts) {
         <div class="chat-art-grid">${views.map((img) => {
           const src = img.url || "";
           const label = escapeHtml(img.label || "");
-          const cap = img.caption ? `<div class="chat-art-caption">${escapeHtml(String(img.caption).slice(0, 160))}</div>` : "";
           return `<figure class="chat-art-item">
             <img src="${src}?t=${Date.now()}" alt="${label}" data-lightbox="${src}" title="${label}" />
             <figcaption>${label}</figcaption>
-            ${cap}
           </figure>`;
         }).join("")}</div>
       </div>`
@@ -588,13 +586,11 @@ function renderMessageArtifacts(artifacts) {
 
   const previewBlock = (!meshes.length ? previews : []).map((img) => {
     const src = img.url || "";
-    const cap = img.caption ? `<div class="chat-art-caption">${escapeHtml(String(img.caption).slice(0, 220))}</div>` : "";
     return `<div class="chat-mesh-preview-block">
       <div class="chat-art-section-title">Превью mesh</div>
       <figure class="chat-mesh-preview-still">
         <img src="${src}?t=${Date.now()}" alt="mesh preview" data-lightbox="${src}" />
       </figure>
-      ${cap}
     </div>`;
   }).join("");
 
