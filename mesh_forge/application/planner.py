@@ -38,6 +38,26 @@ class JobPlanner:
                 ],
             )
 
+        # Guided edit: preserve identity via img2img from anchor view.
+        if job.options.guided_edit and job.has_prompt():
+            return JobPlan(
+                branch="guided_edit",
+                action="guided_edit",
+                summary="Guided edit from anchor view with ComfyUI",
+                steps=[
+                    PipelineStep(
+                        PipelineStepType.GUIDED_EDIT,
+                        "ComfyUI guided edit",
+                        {"count": job.options.view_count},
+                    ),
+                    PipelineStep(
+                        PipelineStepType.FINALIZE_RECONSTRUCTION,
+                        "Подготовка STL",
+                        {"solidify_mm": job.options.solidify_mm},
+                    ),
+                ],
+            )
+
         if job.has_mesh():
             if job.has_images():
                 return JobPlan(
@@ -58,22 +78,20 @@ class JobPlanner:
                     ],
                 )
             if job.has_prompt():
-                # Text + existing mesh without semantic_regen flag: treat as semantic regen
-                # (chat path sets the flag; legacy callers also get ComfyUI regen, not filters).
+                # Text + existing mesh: geometry/filter edit unless semantic_regen is set.
                 return JobPlan(
-                    branch="regen_edit",
-                    action="semantic_edit",
-                    summary="Regenerate mesh from text correction with ComfyUI",
+                    branch="edit",
+                    action="geometry_edit",
+                    summary="Edit existing mesh with geometry operations",
                     steps=[
                         PipelineStep(
-                            PipelineStepType.TEXT_TO_MESH,
-                            "ComfyUI semantic regen",
-                            {"count": job.options.view_count},
-                        ),
-                        PipelineStep(
-                            PipelineStepType.FINALIZE_RECONSTRUCTION,
-                            "Подготовка STL",
-                            {"solidify_mm": job.options.solidify_mm},
+                            PipelineStepType.EDIT_MESH,
+                            "Правка mesh",
+                            {
+                                "instruction": job.prompt.strip(),
+                                "solidify_mm": job.options.solidify_mm,
+                                "operations": list(job.options.planned_ops or []),
+                            },
                         ),
                     ],
                 )

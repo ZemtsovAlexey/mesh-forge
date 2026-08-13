@@ -72,9 +72,19 @@ export class MeshViewer {
   }
 
   _animate() {
-    requestAnimationFrame(() => this._animate());
+    this._raf = requestAnimationFrame(() => this._animate());
     this.controls.update();
     this.renderer.render(this.scene, this.camera);
+  }
+
+  dispose() {
+    if (this._raf) cancelAnimationFrame(this._raf);
+    this._raf = null;
+    window.removeEventListener("resize", this._boundResize);
+    this.clear();
+    this.controls?.dispose?.();
+    this.renderer?.dispose?.();
+    this.renderer?.domElement?.remove?.();
   }
 
   resize() {

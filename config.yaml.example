@@ -28,11 +28,13 @@ comfyui:
   quality_preset: draft
   # img2img | zero123 | off
   view_consistency: img2img
+  # clay | color — clay лучше для mesh; color даёт цветные виды
+  view_style: clay
   checkpoint: sd_xl_turbo_1.0_fp16.safetensors
   mesh_checkpoint: hunyuan3d-dit-v2-mv-turbo_fp16.safetensors
   image_checkpoint: hunyuan3d-dit-v2-mv-turbo_fp16.safetensors
   zero123_checkpoint: stable_zero123.ckpt
-  negative_prompt: blurry, lowpoly, cropped, watermark, text, logo, frame, photorealistic fur, different pose, multiple subjects
+  negative_prompt: blurry, lowpoly, cropped, watermark, text, logo, frame, busy background, multiple subjects, different pose
   width: 768
   height: 768
   steps: 8
@@ -40,6 +42,7 @@ comfyui:
   view_count: 4
   view_denoise: 0.58
   view_denoise_turbo: 0.72
+  edit_denoise: 0.28
   view_sampler: euler
   view_scheduler: sgm_uniform
   zero123_width: 256

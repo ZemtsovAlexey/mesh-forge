@@ -63,6 +63,8 @@ class ComfyUIConfig:
     quality_preset: str = "draft"
     # img2img | zero123 | off — how left/back/right views are produced from the front
     view_consistency: str = "img2img"
+    # clay = matte white studio (best for mesh); color = painted / colored product views
+    view_style: str = "clay"
     checkpoint: str = "sd_xl_turbo_1.0_fp16.safetensors"
     mesh_checkpoint: str = "hunyuan3d-dit-v2-mv-turbo_fp16.safetensors"
     image_checkpoint: str = "hunyuan3d-dit-v2-mv-turbo_fp16.safetensors"
@@ -76,6 +78,8 @@ class ComfyUIConfig:
     # img2img orbit strength (side views from front)
     view_denoise: float = 0.58
     view_denoise_turbo: float = 0.72
+    # guided edit: how strongly to change the anchor front (keep low to preserve identity)
+    edit_denoise: float = 0.28
     view_sampler: str = "euler"
     view_scheduler: str = "sgm_uniform"
     # Zero123 novel-view orbits
@@ -154,6 +158,10 @@ class AppConfig:
     @property
     def comfyui_zero123_orbits_workflow_path(self) -> Path:
         return ROOT / "mesh_forge" / "workflows" / "zero123_orbits.json"
+
+    @property
+    def comfyui_guided_edit_workflow_path(self) -> Path:
+        return ROOT / "mesh_forge" / "workflows" / "guided_edit_multiview.json"
 
     def resolve(self, key: str) -> Path | None:
         value = getattr(self.paths, key, "") or ""
@@ -236,6 +244,7 @@ def save_config(config: AppConfig) -> Path:
         "image_to_mesh_workflow": config.comfyui.image_to_mesh_workflow or str(config.comfyui_image_to_mesh_workflow_path),
         "quality_preset": config.comfyui.quality_preset,
         "view_consistency": config.comfyui.view_consistency,
+        "view_style": config.comfyui.view_style,
         "checkpoint": config.comfyui.checkpoint,
         "mesh_checkpoint": config.comfyui.mesh_checkpoint,
         "image_checkpoint": config.comfyui.image_checkpoint,
@@ -248,6 +257,7 @@ def save_config(config: AppConfig) -> Path:
         "view_count": config.comfyui.view_count,
         "view_denoise": config.comfyui.view_denoise,
         "view_denoise_turbo": config.comfyui.view_denoise_turbo,
+        "edit_denoise": config.comfyui.edit_denoise,
         "view_sampler": config.comfyui.view_sampler,
         "view_scheduler": config.comfyui.view_scheduler,
         "zero123_width": config.comfyui.zero123_width,
@@ -361,6 +371,11 @@ VIEW_CONSISTENCY_MODES: dict[str, dict[str, str]] = {
     "off": {
         "label": "Off — только front, single-view mesh",
     },
+}
+
+VIEW_STYLE_MODES: dict[str, dict[str, str]] = {
+    "clay": {"label": "Clay — белый матовый studio (лучше для mesh)"},
+    "color": {"label": "Color — цветной объект по описанию"},
 }
 
 
@@ -534,6 +549,14 @@ def apply_view_consistency(config: AppConfig, mode: str) -> AppConfig:
     return config
 
 
+def apply_view_style(config: AppConfig, style: str) -> AppConfig:
+    key = (style or "clay").strip().lower()
+    if key not in VIEW_STYLE_MODES:
+        raise ValueError(f"Unknown view_style: {style}. Use clay|color")
+    config.comfyui.view_style = key
+    return config
+
+
 def apply_generation_knobs(config: AppConfig, knobs: dict[str, Any]) -> AppConfig:
     """Apply optional sampling/orbit knobs onto comfyui config."""
     c = config.comfyui
@@ -619,6 +642,7 @@ def update_generation_settings(
     *,
     quality_preset: str,
     view_consistency: str | None = None,
+    view_style: str | None = None,
     mesh_postprocess: bool | None = None,
     knobs: dict[str, Any] | None = None,
 ) -> AppConfig:
@@ -626,6 +650,8 @@ def update_generation_settings(
     apply_quality_preset(config, quality_preset)
     if view_consistency is not None:
         apply_view_consistency(config, view_consistency)
+    if view_style is not None:
+        apply_view_style(config, view_style)
     if mesh_postprocess is not None:
         config.photo.mesh_postprocess = bool(mesh_postprocess)
     if knobs:
@@ -647,13 +673,20 @@ def generation_settings_payload(
     view_mode = (cfg.comfyui.view_consistency or "img2img").lower()
     if view_mode not in VIEW_CONSISTENCY_MODES:
         view_mode = "img2img"
+    style = (cfg.comfyui.view_style or "clay").lower()
+    if style not in VIEW_STYLE_MODES:
+        style = "clay"
     knobs = _knobs_from_config(cfg)
     payload = {
         "quality_preset": preset,
         "view_consistency": view_mode,
+        "view_style": style,
         "mesh_postprocess": bool(cfg.photo.mesh_postprocess),
         "view_modes": {
             key: {"label": val["label"]} for key, val in VIEW_CONSISTENCY_MODES.items()
+        },
+        "view_styles": {
+            key: {"label": val["label"]} for key, val in VIEW_STYLE_MODES.items()
         },
         "presets": {
             key: {
@@ -676,6 +709,7 @@ def generation_settings_payload(
             "image_checkpoint": cfg.comfyui.image_checkpoint,
             "zero123_checkpoint": cfg.comfyui.zero123_checkpoint,
             "view_consistency": view_mode,
+            "view_style": style,
             "mesh_postprocess": bool(cfg.photo.mesh_postprocess),
             "steps": cfg.comfyui.steps,
             "cfg": cfg.comfyui.cfg,

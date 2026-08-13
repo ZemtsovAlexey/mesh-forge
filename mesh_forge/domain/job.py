@@ -16,6 +16,9 @@ class JobOptions:
     user_prompt: str = ""
     generation_prompt: str = ""
     semantic_regen: bool = False
+    guided_edit: bool = False
+    planned_ops: list[dict] = field(default_factory=list)
+    anchor_image: Path | None = None
 
 
 @dataclass

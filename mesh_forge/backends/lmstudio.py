@@ -11,9 +11,9 @@ from openai import OpenAI
 from mesh_forge.config import AppConfig, load_config
 
 DEFAULT_CREATE_QUESTIONS = [
-    "Какая поза? (сидит / стоит / динамичная)",
-    "Стиль: matte clay фигурка или другой?",
-    "Какие детали обязательны? (уши, хвост, основание…)",
+    "Что именно моделируем? (объект / персонаж / здание…)",
+    "Какой стиль? (мультяшный / реалистичный / clay / lowpoly…)",
+    "Какие детали обязательны?",
 ]
 
 PLANNER_SYSTEM = """You are a 3D mesh operations planner for 3D printing.
@@ -29,14 +29,15 @@ Given a user instruction and optional mesh stats, output ONLY valid JSON:
   "summary": "short explanation"
 }
 Allowed ops: scale_axis (x|y|z + value_mm), scale_uniform (factor), solidify (thickness_mm),
-decimate (target_faces), smooth (iterations), fill_holes, remesh_voxel (voxel_mm).
+decimate (target_faces), smooth (iterations), fill_holes, remove_needles, remesh_voxel (voxel_mm).
 
 Rules:
-- Prefer minimal ops. For "remove spikes / needles / fix edges" use smooth (1-3) then optional
-  decimate — do NOT remesh_voxel unless the user explicitly asks to remesh.
+- Prefer minimal ops. For "remove spikes / needles / noise / jagged / fix edges" use
+  remove_needles then smooth (1-3), optional decimate — do NOT remesh_voxel unless the user
+  explicitly asks to remesh.
 - remesh_voxel is destructive on large scans (bbox > 200 mm). If you must remesh, set
   voxel_mm to at least max(bbox)/150 (often 5–20 mm), never 0.5 mm on meter-scale parts.
-- fill_holes only on small meshes (< 100k faces) or when user asks to close holes.
+- fill_holes when user asks to close holes (works best under ~200k faces; still include it).
 - Never invent dimensions; use mesh stats bbox when scaling.
 If you cannot map the request, return empty operations and explain in summary."""
 
@@ -99,20 +100,23 @@ Reply with ONLY valid JSON:
 
 Rules for draft_prompt_en:
 - Faithful translation of what the user asked — do NOT reinvent or over-interpret.
-- ONE short sentence (max ~35 words). Example:
-  user: "настольная фигурка потягивающегося и зевающего кота"
-  draft: "A desktop figurine of a stretching and yawning cat."
-- Keep pose/action words from the user (stretching, yawning, sitting…).
+- Subject can be ANYTHING (character, animal, building, vehicle, prop, tool…) — never force
+  it into a different category than what the user asked for.
+- ONE short sentence (max ~35 words). No sample subjects — follow only the user text.
+- Keep pose/action/style words from the user when present.
 - Do NOT add: watertight, manifold, multiview, identical from all angles, clay/matte finish,
-  studio lighting, printable, silhouette, no holes, no fur, debris, geometric form, or similar
+  studio lighting, printable, silhouette, no holes, debris, geometric form, or similar
   tech/quality boilerplate (that is added elsewhere).
-- Do NOT invent extra anatomy details the user did not mention (paw positions, tail curl, tongue…).
+- Do NOT invent extra details the user did not mention.
 - Do NOT invent numeric dimensions unless the user gave them.
 
 Clarify rules:
 - Prefer ready=true when the subject is clear. Ask questions ONLY if critical.
 - If ready=false: questions MUST contain 1-3 real question strings; assistant_message lists them.
-- If ready=true: questions=[], fill draft_prompt_en.
+- If ready=true: questions=[], fill draft_prompt_en; assistant_message must be empty or a
+  very short status in the user's language (e.g. «Ок, генерирую.») — NEVER paste
+  draft_prompt_en or any English translation into assistant_message (translation is
+  internal to the generator).
 - Never map the request to mesh filters (smooth/decimate/solidify).
 - If the user complains that you asked nothing / wants to proceed, set ready=true with a
   faithful short draft from the conversation so far."""
@@ -134,6 +138,8 @@ Clarify rules:
         data["intent"] = "create"
         questions = [str(q).strip() for q in (data.get("questions") or []) if str(q).strip()][:3]
         draft = _sanitize_create_draft(str(data.get("draft_prompt_en") or "").strip())
+        if draft and not _looks_english(draft):
+            draft = self.ensure_english_subject(draft)
         ready = bool(data.get("ready")) and bool(draft)
         assistant = str(data.get("assistant_message") or "").strip()
 
@@ -148,37 +154,101 @@ Clarify rules:
         data["assistant_message"] = assistant
         return data
 
+    def ensure_english_subject(self, text: str) -> str:
+        """Force a short English subject line for ComfyUI when input is not English."""
+        cleaned = (text or "").strip()
+        if not cleaned:
+            return ""
+        if _looks_english(cleaned):
+            return _sanitize_create_draft(cleaned)
+        system = (
+            "You are a literal translator for 3D image prompts.\n"
+            "Translate the USER message into ONE short English sentence for image generation.\n"
+            "Reply with ONLY that English sentence — no quotes, no JSON, no explanation.\n"
+            "CRITICAL: translate ONLY the user's subject. Do not invent, substitute, or add objects.\n"
+            "Keep meaning faithful. Do not invent extra details the user did not mention.\n"
+            "Do not include example subjects of your own."
+        )
+        try:
+            out = self.chat(
+                self.config.llm.planner_model,
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": cleaned},
+                ],
+                temperature=0.0,
+            ).strip().strip('"').strip("'")
+            # Models sometimes wrap in JSON or add labels.
+            if out.lower().startswith("draft:"):
+                out = out.split(":", 1)[1].strip()
+            if out.startswith("{") and "draft" in out.lower():
+                parsed = _parse_json_response(out)
+                out = str(parsed.get("draft_prompt_en") or parsed.get("text") or out).strip()
+            out = _sanitize_create_draft(out)
+            if out and _looks_english(out):
+                return out
+        except Exception:
+            pass
+        # Last-resort English wrapper without leaving Cyrillic as the subject.
+        return "A single small 3D-printable object matching the user description."
+
     def interpret_mesh_edit(
         self,
         *,
         instruction: str,
         mesh_preview_b64: str,
         prior_prompt: str = "",
+        prefer_guided: bool = True,
+        reference_photo_b64: str | None = None,
     ) -> dict[str, Any]:
-        system = """You analyze a 3D mesh preview and a user edit request.
-This is SEMANTIC geometry correction (e.g. remove an extra limb), NOT mesh filters.
+        guided_bias = (
+            "Default to guided_edit for add/remove detail, missing parts, small shape fixes."
+            if prefer_guided
+            else "Prefer semantic_edit only when the user wants a major redesign."
+        )
+        system = f"""You analyze a 3D mesh preview (and optional reference photo) plus a user edit request.
+Classify the request:
+- geometry_edit: cleanup of the EXISTING mesh (noise, spikes, holes, smooth, repair, jagged edges).
+- guided_edit: keep the same object identity, apply a local change (add door/window/ear, remove a bump).
+- semantic_edit: major redesign / new pose / start over (full text-to-3D regen, identity not preserved).
+
+{guided_bias}
+
 Reply with ONLY valid JSON:
-{
-  "intent": "semantic_edit",
+{{
+  "intent": "geometry_edit" | "guided_edit" | "semantic_edit",
   "assistant_message": "short reply in the user's language",
   "questions": [],
   "ready": false,
   "edit_brief_en": "",
   "confidence": 0.0
-}
+}}
 
 Rules:
-- edit_brief_en: one English paragraph describing the corrected object for text-to-3D regeneration.
-  Include the fix explicitly (e.g. "fix: remove the extra left front paw") and keep desired pose/style.
-- If unclear what to change, ready=false and ask up to 3 questions.
-- Do NOT suggest smooth/decimate/solidify/remesh filters."""
+- geometry_edit: ready=true; edit_brief_en = short English cleanup summary.
+- guided_edit: ready=true; edit_brief_en = one English sentence describing the object AFTER the change.
+  CRITICAL: identify the real subject from the reference PHOTO and/or prior prompt — NOT from the grey
+  mesh preview alone (previews look like generic clay blobs).
+  Keep colors/style/identity. Mention the fix explicitly. Do not invent a different subject.
+- semantic_edit: edit_brief_en describes the new object for full regeneration; include the fix explicitly.
+- Prefer guided_edit when both a detail change and vague "make nicer" appear together.
+- If unclear, ready=false and ask up to 3 questions."""
         user_text = f"User edit request: {instruction.strip()}"
         if prior_prompt.strip():
             user_text += f"\nPrior creation prompt/context: {prior_prompt.strip()}"
+        if reference_photo_b64:
+            user_text += (
+                "\nA reference photo is attached — use it as ground truth for what the object should look like."
+            )
         content: list[dict[str, Any]] = [
             {"type": "text", "text": user_text},
             {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{mesh_preview_b64}"}},
         ]
+        if reference_photo_b64:
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:image/png;base64,{reference_photo_b64}"},
+            })
         text = self.chat(
             self.config.llm.vision_model,
             [
@@ -190,17 +260,25 @@ Rules:
         data = _parse_json_response(text)
         if data.get("parse_error"):
             return {
-                "intent": "semantic_edit",
+                "intent": "guided_edit" if prefer_guided else "semantic_edit",
                 "assistant_message": str(data.get("summary") or text)[:500],
                 "questions": ["Что именно нужно изменить в модели?"],
                 "ready": False,
                 "edit_brief_en": "",
                 "confidence": 0.0,
             }
-        data["intent"] = "semantic_edit"
+        intent = str(data.get("intent") or ("guided_edit" if prefer_guided else "semantic_edit")).strip().lower()
+        if intent not in {"geometry_edit", "guided_edit", "semantic_edit"}:
+            intent = "guided_edit" if prefer_guided else "semantic_edit"
+        data["intent"] = intent
         data["questions"] = list(data.get("questions") or [])[:3]
         data["edit_brief_en"] = str(data.get("edit_brief_en") or "").strip()
-        data["ready"] = bool(data.get("ready")) and bool(data["edit_brief_en"])
+        if intent in {"geometry_edit", "guided_edit"}:
+            data["ready"] = True if data["edit_brief_en"] or intent == "geometry_edit" else bool(data.get("ready"))
+            if intent == "guided_edit" and not data["edit_brief_en"]:
+                data["ready"] = False
+        else:
+            data["ready"] = bool(data.get("ready")) and bool(data["edit_brief_en"])
         data["assistant_message"] = str(data.get("assistant_message") or "").strip()
         return data
 
@@ -217,6 +295,49 @@ Rules:
                 {"role": "user", "content": prompt},
             ],
         ).strip()
+
+    def describe_image(
+        self,
+        image_path: Path | None = None,
+        *,
+        image_b64: str | None = None,
+        context: str = "",
+        mime: str = "image/png",
+    ) -> str:
+        """Short vision caption for agent context (Russian)."""
+        b64 = image_b64
+        if not b64 and image_path and image_path.is_file():
+            raw = image_path.read_bytes()
+            b64 = base64.b64encode(raw).decode()
+            suffix = image_path.suffix.lower()
+            mime = {
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".webp": "image/webp",
+                ".png": "image/png",
+            }.get(suffix, "image/png")
+        if not b64:
+            return ""
+        hint = (context or "").strip()
+        prompt = (
+            "Кратко опиши изображение для 3D-агента (1–2 предложения по-русски): "
+            "что за объект, поза/ракурс, стиль, цвета, заметные дефекты или лишнее. "
+            "Без вступлений и списков."
+        )
+        if hint:
+            prompt += f"\nКонтекст: {hint}"
+        content: list[dict[str, Any]] = [
+            {"type": "text", "text": prompt},
+            {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}},
+        ]
+        try:
+            return self.chat(
+                self.config.llm.vision_model,
+                [{"role": "user", "content": content}],
+                temperature=0.2,
+            ).strip()
+        except Exception:
+            return ""
 
     def describe_image_diff(self, instruction: str, mesh_preview_b64: str | None, ref_image_path: Path | None) -> str:
         content: list[dict[str, Any]] = [{"type": "text", "text": instruction}]
@@ -289,7 +410,7 @@ _DRAFT_BOILERPLATE_RE = re.compile(
     r"watertight|manifold|multiview|identical character from all angles|"
     r"matte clay(?: material)?(?: finish)?|smooth closed surface|"
     r"no holes|no floating debris|photoreal fur|studio lighting|"
-    r"3d printable|printable figurine|clean silhouette|"
+    r"3d printable|printable (?:figurine|object)|clean silhouette|"
     r"suitable for (?:multiview )?reconstruction|simple geometric form|"
     r"optimized for 3d|clean manifold surface|closed surface without"
     r")\b[^.]*\.?",
@@ -326,3 +447,11 @@ def _sanitize_create_draft(draft: str) -> str:
     if len(words) > 28:
         text = " ".join(words[:28]).rstrip(",;") + "."
     return text
+
+
+def _looks_english(text: str) -> bool:
+    letters = [c for c in (text or "") if c.isalpha()]
+    if not letters:
+        return False
+    ascii_letters = sum(1 for c in letters if ord(c) < 128)
+    return ascii_letters / len(letters) > 0.85

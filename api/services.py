@@ -30,6 +30,7 @@ from api.schemas import (
     LLMModelsResponse,
     LLMSettings,
     OperationResult,
+    PipelineStateInfo,
     ProjectDetail,
     ProjectSummary,
     SystemStatus,
@@ -98,11 +99,28 @@ def qc_report_for(manifest: ProjectManifest) -> str | None:
     return analyze_mesh(mesh).summary()
 
 
-def operation_result(manifest: ProjectManifest, message: str) -> OperationResult:
+def operation_result(
+    manifest: ProjectManifest,
+    message: str,
+    *,
+    pipeline: dict | None = None,
+) -> OperationResult:
+    pipe = None
+    if pipeline is not None:
+        pipe = PipelineStateInfo(**pipeline)
     return OperationResult(
         message=message,
         project=project_detail(manifest),
         qc_report=qc_report_for(manifest),
+        pipeline=pipe,
+    )
+
+
+def pipeline_result(manifest: ProjectManifest, state_payload: dict, message: str | None = None) -> OperationResult:
+    return operation_result(
+        manifest,
+        message or state_payload.get("message") or "OK",
+        pipeline=state_payload,
     )
 
 
@@ -223,6 +241,7 @@ def save_generation_settings(
     *,
     quality_preset: str,
     view_consistency: str = "img2img",
+    view_style: str = "clay",
     mesh_postprocess: bool = True,
     knobs: dict | None = None,
     download_missing: bool = True,
@@ -230,6 +249,7 @@ def save_generation_settings(
     cfg = update_generation_settings(
         quality_preset=quality_preset,
         view_consistency=view_consistency,
+        view_style=view_style,
         mesh_postprocess=mesh_postprocess,
         knobs=knobs,
     )
@@ -275,6 +295,9 @@ def build_job(
     user_prompt: str = "",
     generation_prompt: str = "",
     semantic_regen: bool = False,
+    guided_edit: bool = False,
+    planned_ops: list[dict] | None = None,
+    anchor_image: Path | None = None,
 ) -> GenerationJob:
     generation = (generation_prompt or prompt or "").strip()
     return GenerationJob(
@@ -293,6 +316,9 @@ def build_job(
             user_prompt=(user_prompt or "").strip(),
             generation_prompt=generation,
             semantic_regen=semantic_regen,
+            guided_edit=guided_edit,
+            planned_ops=list(planned_ops or []),
+            anchor_image=anchor_image,
         ),
     )
 
@@ -303,8 +329,14 @@ def chat_state_response(data: dict) -> dict:
 
 def get_project_chat(manifest: ProjectManifest) -> dict:
     from mesh_forge.application import PromptChatService
+    from mesh_forge.application.chat_results import enrich_chat_payload
+    from mesh_forge.application.notebook import notebook_payload
+    from mesh_forge.application.stepped_pipeline import pipeline_payload
 
-    return PromptChatService().get(manifest)
+    data = PromptChatService().get(manifest)
+    data["pipeline"] = pipeline_payload(manifest)
+    data["notebook"] = notebook_payload(manifest)
+    return enrich_chat_payload(manifest, data)
 
 
 def post_project_chat_message(
@@ -312,10 +344,22 @@ def post_project_chat_message(
     *,
     text: str,
     has_images: bool = False,
+    ref_ids: list[str] | None = None,
 ) -> dict:
-    from mesh_forge.application import PromptChatService
+    from mesh_forge.application.chat_agent import ChatAgentService
 
-    return PromptChatService().post_message(manifest, text, has_images=has_images)
+    return ChatAgentService().post_message(
+        manifest,
+        text,
+        has_images=has_images,
+        ref_ids=ref_ids,
+    )
+
+
+def restart_project_chat_from_message(manifest: ProjectManifest, message_id: str) -> dict:
+    from mesh_forge.application.chat_agent import ChatAgentService
+
+    return ChatAgentService().restart_from_message(manifest, message_id)
 
 
 def confirm_project_chat(
@@ -329,13 +373,77 @@ def confirm_project_chat(
     remove_bg: bool = True,
 ) -> OperationResult:
     from mesh_forge.application import PromptChatService
+    from mesh_forge.application.stepped_pipeline import (
+        pipeline_payload,
+        start_photo_gate,
+        start_text_front,
+    )
 
     chat = PromptChatService()
     state = chat.load(manifest)
     image_paths = image_paths or []
 
-    # Manual cleanup path is separate; chat confirm is create / semantic regen / images.
-    if state.intent == "semantic_edit" or (state.mode == "edit" and state.edit_brief_en):
+    # Manual cleanup path is separate; chat confirm is create / semantic regen / geometry / images.
+    if state.intent == "geometry_edit":
+        if not state.ready:
+            raise ValueError("Chat is not ready for geometry edit")
+        current = manifest.current_mesh_path()
+        if current is None or not current.is_file():
+            raise ValueError("No current mesh to edit")
+        instruction = (state.user_prompt or state.edit_brief_en or "cleanup mesh").strip()
+        job = build_job(
+            project_id=manifest.id,
+            prompt=instruction,
+            user_prompt=instruction,
+            generation_prompt=instruction,
+            source_mesh=current,
+            use_current_mesh=True,
+            semantic_regen=False,
+            planned_ops=list(state.planned_ops or []),
+            solidify_mm=solidify_mm,
+        )
+        result = run_generation_job(orch, manifest, job)
+        state = chat.load(manifest)
+        state.ready = False
+        state.status = "idle"
+        state.draft_prompt_en = ""
+        state.edit_brief_en = ""
+        chat.save(manifest, state)
+        return result
+
+    if state.intent == "guided_edit":
+        if not state.ready or not (state.edit_brief_en or state.draft_prompt_en).strip():
+            raise ValueError("Chat is not ready for guided edit")
+        brief = (state.edit_brief_en or state.draft_prompt_en).strip()
+        current = manifest.current_mesh_path()
+        # Do not pass photo refs as img2img anchors; runner bakes clay front when needed.
+        anchor = manifest.find_view_anchor()
+        job = build_job(
+            project_id=manifest.id,
+            prompt=brief,
+            user_prompt=state.user_prompt or brief,
+            generation_prompt=brief,
+            source_mesh=current,
+            use_current_mesh=bool(current),
+            guided_edit=True,
+            semantic_regen=False,
+            anchor_image=anchor,
+            solidify_mm=solidify_mm,
+        )
+        result = run_generation_job(orch, manifest, job)
+        state = chat.load(manifest)
+        state.ready = False
+        state.status = "idle"
+        state.draft_prompt_en = ""
+        state.edit_brief_en = ""
+        chat.save(manifest, state)
+        return result
+
+    if state.intent == "semantic_edit" or (
+        state.mode == "edit"
+        and state.edit_brief_en
+        and state.intent not in {"geometry_edit", "guided_edit", "create"}
+    ):
         if not state.ready or not (state.edit_brief_en or state.draft_prompt_en).strip():
             raise ValueError("Chat is not ready for semantic regenerate")
         brief = (state.edit_brief_en or state.draft_prompt_en).strip()
@@ -348,40 +456,78 @@ def confirm_project_chat(
             solidify_mm=solidify_mm,
         )
         result = run_generation_job(orch, manifest, job)
-        chat.reset(manifest)
+        # Keep history; just clear ready flags
+        state = chat.load(manifest)
+        state.ready = False
+        state.status = "idle"
+        state.draft_prompt_en = ""
+        state.edit_brief_en = ""
+        chat.save(manifest, state)
         return result
 
-    if image_paths and not state.draft_prompt_en:
-        job = build_job(
-            project_id=manifest.id,
-            prompt=state.user_prompt,
-            user_prompt=state.user_prompt,
-            generation_prompt=state.user_prompt,
-            image_paths=image_paths,
-            remove_bg=remove_bg,
+    # Text create: always stepped front-only (even if project already has a mesh).
+    # Full semantic/guided paths are handled above by intent.
+    if state.intent == "create" or (state.draft_prompt_en.strip() and not (state.edit_brief_en or "").strip()):
+        if not state.ready or not state.draft_prompt_en.strip():
+            raise ValueError("Chat is not ready to generate")
+        brief = state.draft_prompt_en.strip()
+        user_prompt = state.user_prompt or brief
+        pipe = start_text_front(
+            manifest,
+            brief_en=brief,
+            user_prompt=user_prompt,
             solidify_mm=solidify_mm,
         )
-        result = run_generation_job(orch, manifest, job)
-        chat.reset(manifest)
-        return result
+        state = chat.load(manifest)
+        state.ready = False
+        state.status = "pipeline"
+        # Keep the EN brief that was actually sent to Comfy (may have been translated).
+        if pipe.brief_en:
+            state.draft_prompt_en = pipe.brief_en
+        chat.save(manifest, state)
+        return pipeline_result(manifest, pipeline_payload(manifest, pipe))
 
-    if not state.ready or not state.draft_prompt_en.strip():
-        raise ValueError("Chat is not ready to generate")
+    # Photo gate: preview before mesh
+    if image_paths and not state.draft_prompt_en:
+        pipe = start_photo_gate(
+            manifest,
+            image_paths,
+            user_prompt=state.user_prompt or "",
+            solidify_mm=solidify_mm,
+            remove_bg=remove_bg,
+        )
+        state = chat.load(manifest)
+        state.ready = False
+        state.status = "pipeline"
+        chat.save(manifest, state)
+        return pipeline_result(manifest, pipeline_payload(manifest, pipe))
 
-    job = build_job(
-        project_id=manifest.id,
-        prompt=state.draft_prompt_en,
-        user_prompt=state.user_prompt or state.draft_prompt_en,
-        generation_prompt=state.draft_prompt_en,
-        image_paths=image_paths,
-        remove_bg=remove_bg,
-        solidify_mm=solidify_mm,
-        scan_mode=mode,
-        smooth_iters=smooth_iters,
-    )
-    result = run_generation_job(orch, manifest, job)
-    chat.reset(manifest)
-    return result
+    raise ValueError("Chat is not ready to generate")
+
+
+def get_pipeline(manifest: ProjectManifest) -> dict:
+    from mesh_forge.application.stepped_pipeline import pipeline_payload
+
+    return pipeline_payload(manifest)
+
+
+def continue_project_pipeline(manifest: ProjectManifest) -> OperationResult:
+    from mesh_forge.application.stepped_pipeline import continue_pipeline, pipeline_payload
+
+    pipe = continue_pipeline(manifest)
+    return pipeline_result(manifest, pipeline_payload(manifest, pipe))
+
+
+def redo_project_pipeline(
+    manifest: ProjectManifest,
+    *,
+    step: str = "front",
+    brief_en: str | None = None,
+) -> OperationResult:
+    from mesh_forge.application.stepped_pipeline import pipeline_payload, redo_step
+
+    pipe = redo_step(manifest, step=step, brief_en=brief_en)
+    return pipeline_result(manifest, pipeline_payload(manifest, pipe))
 
 
 def _extract_generation_prompt(instruction: str | None) -> tuple[str, str]:

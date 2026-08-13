@@ -51,10 +51,39 @@ class DuplicateProjectRequest(BaseModel):
     name: str | None = Field(default=None, max_length=120)
 
 
+class PipelineImageInfo(BaseModel):
+    label: str
+    path: str = ""
+    stage: str = ""
+    url: str = ""
+
+
+class PipelineStateInfo(BaseModel):
+    pipeline: str = "idle"
+    step: str = "idle"
+    status: str = "idle"
+    brief_en: str = ""
+    user_prompt: str = ""
+    message: str = ""
+    error: str | None = None
+    quality_ok: bool = True
+    can_continue: bool = False
+    can_redo: bool = False
+    updated_at: str = ""
+    images: list[PipelineImageInfo] = Field(default_factory=list)
+
+
+class PipelineRedoRequest(BaseModel):
+    step: str = "front"
+    brief_en: str | None = None
+    solidify_mm: float | None = None
+
+
 class OperationResult(BaseModel):
     message: str
     project: ProjectDetail
     qc_report: str | None = None
+    pipeline: PipelineStateInfo | None = None
 
 
 class SystemStatus(BaseModel):
@@ -140,13 +169,16 @@ class GenerationActiveInfo(BaseModel):
     mesh_cfg: float
     mesh_guidance: float
     knobs: GenerationKnobs = Field(default_factory=GenerationKnobs)
+    view_style: str = "clay"
 
 
 class GenerationSettings(BaseModel):
     quality_preset: str
     view_consistency: str = "img2img"
+    view_style: str = "clay"
     mesh_postprocess: bool = True
     view_modes: dict[str, dict[str, str]] = Field(default_factory=dict)
+    view_styles: dict[str, dict[str, str]] = Field(default_factory=dict)
     presets: dict[str, GenerationPresetInfo]
     active: GenerationActiveInfo
     knobs: GenerationKnobs = Field(default_factory=GenerationKnobs)
@@ -158,6 +190,7 @@ class GenerationSettings(BaseModel):
 class GenerationSettingsUpdate(BaseModel):
     quality_preset: str
     view_consistency: str = "img2img"
+    view_style: str = "clay"
     mesh_postprocess: bool = True
     knobs: GenerationKnobs | None = None
     download_missing: bool = True
@@ -183,6 +216,24 @@ class ChatMessageInfo(BaseModel):
     role: str
     content: str
     created_at: str = ""
+    id: str = ""
+    kind: str = "text"
+    ref_ids: list[str] = Field(default_factory=list)
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class NotebookEntryInfo(BaseModel):
+    id: str
+    kind: str = "note"
+    title: str = ""
+    summary: str = ""
+    step: str = ""
+    brief_en: str = ""
+    user_prompt: str = ""
+    version: int | None = None
+    images: list[dict[str, Any]] = Field(default_factory=list)
+    meta: dict[str, Any] = Field(default_factory=dict)
+    created_at: str = ""
 
 
 class ChatStateInfo(BaseModel):
@@ -196,6 +247,9 @@ class ChatStateInfo(BaseModel):
     ready: bool = False
     questions: list[str] = Field(default_factory=list)
     assistant_message: str = ""
+    planned_ops: list[dict[str, Any]] = Field(default_factory=list)
+    pipeline: PipelineStateInfo | None = None
+    notebook: list[NotebookEntryInfo] = Field(default_factory=list)
 
 
 class ChatMessageRequest(BaseModel):

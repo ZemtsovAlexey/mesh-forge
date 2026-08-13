@@ -16,7 +16,7 @@ from mesh_forge.domain import GenerationJob, ImageArtifact, ImageSet, MeshArtifa
 from mesh_forge.manifest import ProjectManifest
 from mesh_forge.mesh_qc import analyze_mesh
 from mesh_forge.processing import MeshProcessingService
-from mesh_forge.render import render_mesh_preview
+from mesh_forge.render import render_mesh_front_clay, render_mesh_preview
 
 logger = logging.getLogger("mesh_forge.runner")
 
@@ -89,6 +89,52 @@ class PipelineRunner:
                 raw_mesh = generated.mesh
                 notes.append(f"Generated {len(image_set.items)} named views and reconstructed mesh in ComfyUI")
                 reference = ", ".join(image_set.labels())
+            elif step.step_type == PipelineStepType.GUIDED_EDIT:
+                prog.update(manifest.id, 12, "guided")
+                anchor = job.options.anchor_image
+                # Never img2img from a colorful reference photo — that keeps 2D scene backgrounds
+                # and breaks multiview→mesh. Prefer clay views, else bake front from mesh.
+                view_anchor = manifest.find_view_anchor()
+                if view_anchor is not None and not _looks_like_clay_studio_view(view_anchor):
+                    notes.append(
+                        f"Skipped non-clay view anchor {view_anchor.name} (likely photo/illustration)"
+                    )
+                    view_anchor = None
+                if anchor is not None and Path(anchor).is_file():
+                    ref = manifest.find_reference_photo()
+                    if ref is not None and Path(anchor).resolve() == Path(ref).resolve():
+                        anchor = None
+                    elif not _looks_like_clay_studio_view(Path(anchor)):
+                        notes.append(f"Skipped non-clay job anchor {Path(anchor).name}")
+                        anchor = None
+                if (anchor is None or not Path(anchor).is_file()) and view_anchor is not None:
+                    anchor = view_anchor
+                if anchor is None or not Path(anchor).is_file():
+                    mesh_for_bake = current_mesh or manifest.current_mesh_path()
+                    if mesh_for_bake is None or not mesh_for_bake.is_file():
+                        raise RuntimeError(
+                            "Guided edit needs a reconstruction view or a mesh to bake from"
+                        )
+                    bake_dir = work_dir / "anchor"
+                    bake_dir.mkdir(parents=True, exist_ok=True)
+                    anchor = render_mesh_front_clay(mesh_for_bake, bake_dir / "front.png", size=768)
+                    notes.append("Anchor baked as clay front from current mesh (photo refs are not used as img2img input)")
+                else:
+                    notes.append(f"Guided edit anchor view: {Path(anchor).name}")
+                generated = self.image_generator.run_guided_edit(
+                    job.prompt,
+                    Path(anchor),
+                    work_dir / "guided_edit",
+                    project_id=manifest.id,
+                    count=job.options.view_count,
+                )
+                image_set = generated.views
+                raw_mesh = generated.mesh
+                notes.append(
+                    f"Guided edit produced {len(image_set.items)} views and reconstructed mesh "
+                    f"(edit_denoise={getattr(self.config.comfyui, 'edit_denoise', 0.28)})"
+                )
+                reference = ", ".join(image_set.labels())
             elif step.step_type == PipelineStepType.GENERATE_VIEWS:
                 prog.update(manifest.id, 6, step.label)
                 image_set = self.image_generator.generate_views(
@@ -149,11 +195,15 @@ class PipelineRunner:
                 if not resolved_instruction:
                     raise ValueError("Edit instruction is empty")
                 prog.update(manifest.id, 24, step.label)
+                preset_ops = step.params.get("operations")
+                if not isinstance(preset_ops, list):
+                    preset_ops = list(job.options.planned_ops or [])
                 edited_artifact, operations, summary = self._apply_edit(
                     mesh_path=current_mesh,
                     instruction=resolved_instruction,
                     work_dir=work_dir / "edit",
                     solidify_mm=float(step.params.get("solidify_mm", 0.0)),
+                    operations=preset_ops if preset_ops else None,
                 )
                 final_mesh = edited_artifact.path
                 instruction = resolved_instruction
@@ -256,18 +306,30 @@ class PipelineRunner:
         instruction: str,
         work_dir: Path,
         solidify_mm: float,
+        operations: list[dict] | None = None,
     ) -> tuple[MeshArtifact, list[dict], str]:
-        stats = analyze_mesh(mesh_path)
-        plan = self.llm.plan_edit(instruction, stats.to_dict())
-        operations = list(plan.get("operations", []))
+        if operations:
+            ops = list(operations)
+            summary = f"Applied {len(ops)} planned geometry op(s)"
+        else:
+            stats = analyze_mesh(mesh_path)
+            plan = self.llm.plan_edit(instruction, stats.to_dict())
+            ops = list(plan.get("operations", []))
+            summary = str(plan.get("summary", "")).strip()
+            if not ops:
+                ops = [
+                    {"op": "remove_needles"},
+                    {"op": "smooth", "iterations": 2},
+                    {"op": "fill_holes"},
+                ]
+                summary = summary or "Fallback cleanup: needles + smooth + fill holes"
         edited = self.mesh_processing.apply_edit_operations(
             mesh_path,
-            operations,
+            ops,
             work_dir,
             solidify_mm=solidify_mm,
         )
-        summary = str(plan.get("summary", "")).strip()
-        return MeshArtifact(path=edited, source="edit", notes=summary), operations, summary
+        return MeshArtifact(path=edited, source="edit", notes=summary), ops, summary
 
     def _build_view_artifacts(self, images: ImageSet) -> list[dict[str, Any]]:
         return [
@@ -289,3 +351,21 @@ class PipelineRunner:
             "stage": artifact.stage,
             "source": artifact.source,
         }
+
+
+def _looks_like_clay_studio_view(path: Path) -> bool:
+    """Reject colorful photo/illustration anchors; keep matte clay / grey studio frames."""
+    try:
+        from PIL import Image
+        import numpy as np
+
+        with Image.open(path) as img:
+            rgb = img.convert("RGB").resize((64, 64))
+            arr = np.asarray(rgb, dtype=np.float32) / 255.0
+        # Saturation proxy: channel max-min.
+        sat = (arr.max(axis=2) - arr.min(axis=2)).mean()
+        # Studio clay views are low-saturation greys/whites.
+        return float(sat) < 0.18
+    except Exception:
+        # If we cannot inspect, be conservative and force mesh bake instead.
+        return False

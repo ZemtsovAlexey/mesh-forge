@@ -5,12 +5,24 @@ const $ = (sel) => document.querySelector(sel);
 let activeProjectId = null;
 let viewer = null;
 let activeProjectHasMesh = false;
+let uiMode = "chat"; // chat | workspace | settings
+let previousUiMode = "chat";
+let lastPipeline = null;
+let lastNotebook = [];
+let lastChatMessages = [];
+let replyRef = null; // { id, preview }
+let pendingImages = [];
+let pendingMesh = null;
 const STAGE_LABELS = {
   concept: "ComfyUI: concept",
+  front: "Front",
   views: "ComfyUI: views",
   mesh: "ComfyUI: mesh",
+  guided: "Guided edit",
   finalize: "Finalize",
 };
+
+const SETTINGS_HINTS = {}; // hints live in HTML
 
 async function api(path, opts = {}) {
   const res = await fetch(path, {
@@ -36,23 +48,110 @@ function toast(msg, type = "ok") {
 }
 
 let progressTimer = null;
+let loadingActive = false;
+let loadingLabel = "";
 
 function setProgressUI(percent, stage, elapsedSec = null) {
   const bar = $("#progress-bar");
   const meta = $("#progress-meta");
   const pct = Math.max(0, Math.min(100, Number(percent) || 0));
-  const stageLabel = STAGE_LABELS[stage] || stage;
+  const stageLabel = STAGE_LABELS[stage] || stage || loadingLabel;
   if (bar) bar.style.width = `${pct}%`;
   const time = elapsedSec != null ? ` · ${Math.round(elapsedSec)}с` : "";
   if (meta) meta.textContent = `${Math.round(pct)}%${time}${stageLabel ? ` — ${stageLabel}` : ""}`;
-  if (stageLabel) $("#loading-text").textContent = stageLabel;
+  if (stageLabel) {
+    const loadingText = $("#loading-text");
+    if (loadingText) loadingText.textContent = stageLabel;
+  }
+  updateChatStatusProgress(pct, stageLabel, elapsedSec);
 }
 
-function setLoading(on, text = "Обработка…") {
-  $("#loading").classList.toggle("hidden", !on);
-  $("#loading-text").textContent = text;
-  if (on) setProgressUI(2, text, 0);
-  else {
+function chatStatusHtml(text, percent = 2, elapsedSec = null) {
+  const pct = Math.max(0, Math.min(100, Number(percent) || 0));
+  const time = elapsedSec != null ? ` · ${Math.round(elapsedSec)}с` : "";
+  return `
+    <div class="chat-avatar" aria-hidden="true">MF</div>
+    <div class="chat-msg-body">
+      <div class="chat-msg-meta">MeshForge · работает</div>
+      <div class="chat-status-card">
+        <div class="chat-status-row">
+          <span class="chat-status-spinner" aria-hidden="true"></span>
+          <span class="chat-status-text">${escapeHtml(text || "Обработка…")}</span>
+          <button type="button" class="btn danger chat-stop-inline" data-chat-stop title="Остановить">Стоп</button>
+        </div>
+        <div class="chat-status-bar"><span style="width:${pct}%"></span></div>
+        <div class="chat-status-meta">${Math.round(pct)}%${time}</div>
+      </div>
+    </div>
+  `;
+}
+
+function ensureChatStatusEl() {
+  const log = $("#chat-log");
+  if (!log) return null;
+  let el = $("#chat-status-msg");
+  if (!el) {
+    el = document.createElement("div");
+    el.id = "chat-status-msg";
+    el.className = "chat-msg assistant status";
+    log.appendChild(el);
+  }
+  return el;
+}
+
+function updateChatStatusProgress(percent, stageLabel, elapsedSec = null) {
+  if (!loadingActive) return;
+  const el = $("#chat-status-msg");
+  if (!el) return;
+  const label = stageLabel || loadingLabel || "Обработка…";
+  el.innerHTML = chatStatusHtml(label, percent, elapsedSec);
+  const log = $("#chat-log");
+  if (log) log.scrollTop = log.scrollHeight;
+}
+
+function setChatStatus(on, text = "Обработка…") {
+  if (!on) {
+    $("#chat-status-msg")?.remove();
+    return;
+  }
+  const el = ensureChatStatusEl();
+  if (!el) return;
+  el.innerHTML = chatStatusHtml(text, 2, 0);
+  const log = $("#chat-log");
+  if (log) log.scrollTop = log.scrollHeight;
+}
+
+function setLoading(on, text = "Обработка…", opts = {}) {
+  loadingActive = !!on;
+  loadingLabel = on ? text : "";
+  const useOverlay = !!opts.overlay || uiMode === "workspace" || uiMode === "settings";
+  const sendBtn = $("#btn-chat-send");
+  const stopBtn = $("#btn-chat-stop");
+  if (sendBtn) sendBtn.disabled = !!on;
+  if (stopBtn) stopBtn.classList.toggle("hidden", !on);
+
+  if (useOverlay) {
+    setChatStatus(false);
+    $("#loading")?.classList.toggle("hidden", !on);
+    if ($("#loading-text")) $("#loading-text").textContent = text;
+    if (on) setProgressUI(2, text, 0);
+    else {
+      setProgressUI(0, "");
+      if (progressTimer) {
+        clearInterval(progressTimer);
+        progressTimer = null;
+      }
+    }
+    return;
+  }
+
+  // Chat-inline status — never block the whole window in agent mode.
+  $("#loading")?.classList.add("hidden");
+  if (on) {
+    setChatStatus(true, text);
+    setProgressUI(2, text, 0);
+  } else {
+    setChatStatus(false);
     setProgressUI(0, "");
     if (progressTimer) {
       clearInterval(progressTimer);
@@ -61,23 +160,37 @@ function setLoading(on, text = "Обработка…") {
   }
 }
 
+async function stopActiveJob() {
+  if (!activeProjectId) return;
+  const stopBtn = $("#btn-chat-stop");
+  if (stopBtn) stopBtn.disabled = true;
+  toast("Останавливаю…");
+  try {
+    await api(`/api/projects/${activeProjectId}/cancel`, { method: "POST" });
+  } catch (e) {
+    toast(e.message?.slice(0, 160) || String(e), "error");
+  } finally {
+    if (stopBtn) stopBtn.disabled = false;
+  }
+}
+
 function startProgressPolling(projectId) {
   if (progressTimer) clearInterval(progressTimer);
   progressTimer = setInterval(async () => {
-    if (!projectId) return;
+    if (!projectId || !loadingActive) return;
     try {
       const p = await api(`/api/projects/${projectId}/progress`);
       if (!p) return;
-      setProgressUI(p.percent, p.stage || "Обработка…", p.elapsed_sec);
+      setProgressUI(p.percent, p.stage || loadingLabel || "Обработка…", p.elapsed_sec);
     } catch {
       /* ignore poll errors while request runs */
     }
   }, 700);
 }
 
-async function runOp(label, fn) {
+async function runOp(label, fn, opts = {}) {
   if (!activeProjectId) { toast("Выберите проект", "error"); return null; }
-  setLoading(true, label);
+  setLoading(true, label, opts);
   startProgressPolling(activeProjectId);
   try {
     const result = await fn();
@@ -102,20 +215,94 @@ function bindRanges() {
 
 function bindFileDrop(inputId, dropSelector) {
   const input = $(inputId);
-  const drop = dropSelector ? $(dropSelector) : input?.closest(".file-drop");
+  const drop = dropSelector ? $(dropSelector) : input?.closest(".file-drop, .composer-icon-btn");
   if (!input || !drop) return;
   input.addEventListener("change", () => {
-    drop.classList.toggle("has-file", !!input.files?.length);
-    if (!input.files?.length) {
-      const fallback = drop.classList.contains("chat-attach") ? "Фото" : drop.querySelector("span")?.dataset?.fallback || "Файл";
-      drop.querySelector("span").textContent = fallback;
+    if (input.id === "chat-images") {
+      const added = Array.from(input.files || []);
+      if (added.length) pendingImages = [...pendingImages, ...added];
+      input.value = "";
+      $("#chat-images-drop")?.classList.toggle("has-file", pendingImages.length > 0);
+      renderAttachChips();
       return;
     }
-    const label = input.multiple
+    if (input.id === "chat-mesh") {
+      pendingMesh = input.files?.[0] || null;
+      input.value = "";
+      $("#chat-mesh-drop")?.classList.toggle("has-file", !!pendingMesh);
+      renderAttachChips();
+      return;
+    }
+    drop.classList.toggle("has-file", !!input.files?.length);
+    const span = drop.querySelector("span");
+    if (!span || drop.classList.contains("composer-icon-btn")) return;
+    if (!input.files?.length) {
+      span.textContent = span.dataset.fallback || "Файл";
+      return;
+    }
+    span.textContent = input.multiple
       ? `${input.files.length} file(s): ${Array.from(input.files).slice(0, 2).map((f) => f.name).join(", ")}`
       : input.files[0].name;
-    drop.querySelector("span").textContent = label;
   });
+}
+
+function syncPendingImagesToInput() {
+  $("#chat-images-drop")?.classList.toggle("has-file", pendingImages.length > 0);
+  renderAttachChips();
+}
+
+function syncPendingMeshToInput() {
+  $("#chat-mesh-drop")?.classList.toggle("has-file", !!pendingMesh);
+  renderAttachChips();
+}
+
+function renderAttachChips() {
+  const box = $("#attach-chips");
+  if (!box) return;
+  const chips = [];
+  pendingImages.forEach((file, index) => {
+    chips.push(`
+      <span class="attach-chip" data-kind="image" data-index="${index}">
+        <span class="attach-chip-kind">фото</span>
+        <span class="attach-chip-name" title="${escapeHtml(file.name)}">${escapeHtml(file.name)}</span>
+        <button type="button" class="attach-chip-remove" data-remove="image" data-index="${index}" aria-label="Открепить">×</button>
+      </span>
+    `);
+  });
+  if (pendingMesh) {
+    chips.push(`
+      <span class="attach-chip" data-kind="mesh">
+        <span class="attach-chip-kind">mesh</span>
+        <span class="attach-chip-name" title="${escapeHtml(pendingMesh.name)}">${escapeHtml(pendingMesh.name)}</span>
+        <button type="button" class="attach-chip-remove" data-remove="mesh" aria-label="Открепить">×</button>
+      </span>
+    `);
+  }
+  box.innerHTML = chips.join("");
+  box.classList.toggle("hidden", chips.length === 0);
+}
+
+function removeAttachment(kind, index = -1) {
+  if (kind === "image") {
+    if (index < 0 || index >= pendingImages.length) return;
+    pendingImages.splice(index, 1);
+    syncPendingImagesToInput();
+    return;
+  }
+  if (kind === "mesh") {
+    pendingMesh = null;
+    syncPendingMeshToInput();
+  }
+}
+
+function clearChatImages() {
+  pendingImages = [];
+  syncPendingImagesToInput();
+}
+
+function clearChatMesh() {
+  pendingMesh = null;
+  syncPendingMeshToInput();
 }
 
 async function loadStatus() {
@@ -267,11 +454,13 @@ function renderProjectMeta(p) {
     useCurrent.disabled = !activeProjectHasMesh;
     if (!activeProjectHasMesh) useCurrent.checked = false;
   }
+  const nameEl = $("#chat-project-name");
+  if (nameEl) nameEl.textContent = p.name || "Проект";
   const hint = $("#chat-hint");
   if (hint) {
     hint.textContent = activeProjectHasMesh
-      ? "Есть модель: смысловая правка текстом, или приложите новый mesh. Фильтры — в Advanced."
-      : "Текст / фото → генерация. Можно сразу приложить готовый mesh (.stl/.obj).";
+      ? "Есть модель: опишите правку текстом или приложите новый mesh."
+      : "Текст / фото → генерация. Можно сразу приложить mesh (.stl/.obj).";
   }
   $("#project-meta").innerHTML = `
     <p><strong>${p.name}</strong></p>
@@ -281,48 +470,246 @@ function renderProjectMeta(p) {
   `;
 }
 
+function setUiMode(mode) {
+  if (mode !== "settings" && uiMode !== "settings") previousUiMode = mode;
+  if (mode === "settings") previousUiMode = uiMode === "settings" ? previousUiMode : uiMode;
+  uiMode = mode;
+  document.body.classList.remove("mode-chat", "mode-workspace", "mode-settings");
+  document.body.classList.add(`mode-${mode}`);
+  const settings = $("#settings-screen");
+  if (settings) settings.hidden = mode !== "settings";
+  if (mode === "workspace" && viewer) {
+    requestAnimationFrame(() => viewer?.resize?.());
+  }
+}
+
+function openLightbox(src, alt = "") {
+  const box = $("#lightbox");
+  const img = $("#lightbox-img");
+  if (!box || !img || !src) return;
+  img.src = src;
+  img.alt = alt;
+  box.classList.remove("hidden");
+}
+
+function closeLightbox() {
+  $("#lightbox")?.classList.add("hidden");
+  const img = $("#lightbox-img");
+  if (img) img.removeAttribute("src");
+}
+
+function stepTitle(step, pipeline) {
+  if (pipeline === "photo_gated") {
+    if (step === "photo") return "Превью фото";
+    if (step === "done") return "Mesh готов";
+    return "Фото → mesh";
+  }
+  if (step === "front") return "Шаг 1 · Front";
+  if (step === "views") return "Шаг 2 · Проекции";
+  if (step === "done") return "Шаг 3 · Mesh готов";
+  if (step === "mesh") return "Шаг 3 · Mesh";
+  return "Пайплайн";
+}
+
+function renderPipelineCard(pipeline) {
+  // Pipeline actions removed — agent runs steps; results live in chat messages.
+  return "";
+}
+
+function renderDraftCard(state) {
+  // Confirm buttons removed — agent starts generation via tools.
+  return "";
+}
+
+let chatMeshViewers = [];
+
+function disposeChatMeshViewers() {
+  for (const v of chatMeshViewers) {
+    try { v.dispose?.(); } catch { /* ignore */ }
+  }
+  chatMeshViewers = [];
+}
+
+function mountChatMeshViewers() {
+  disposeChatMeshViewers();
+  document.querySelectorAll("[data-chat-mesh-url]").forEach((el) => {
+    const url = el.getAttribute("data-chat-mesh-url");
+    if (!url) return;
+    try {
+      const mini = new MeshViewer(el);
+      chatMeshViewers.push(mini);
+      mini.loadUrl(url).catch((err) => {
+        console.warn("chat mesh preview", err);
+        el.innerHTML = `<div class="muted">Не удалось загрузить 3D-превью</div>`;
+      });
+      // Fit after layout
+      requestAnimationFrame(() => mini.resize());
+    } catch (err) {
+      console.warn("chat mesh viewer", err);
+    }
+  });
+}
+
+function renderMessageArtifacts(artifacts) {
+  const list = artifacts || [];
+  if (!list.length) return "";
+  const views = list.filter((a) => a.kind === "image");
+  const previews = list.filter((a) => a.kind === "mesh_preview");
+  const meshes = list.filter((a) => a.kind === "mesh");
+
+  const viewsGrid = views.length
+    ? `<div class="chat-art-section">
+        <div class="chat-art-section-title">Виды</div>
+        <div class="chat-art-grid">${views.map((img) => {
+          const src = img.url || "";
+          const label = escapeHtml(img.label || "");
+          const cap = img.caption ? `<div class="chat-art-caption">${escapeHtml(String(img.caption).slice(0, 160))}</div>` : "";
+          return `<figure class="chat-art-item">
+            <img src="${src}?t=${Date.now()}" alt="${label}" data-lightbox="${src}" title="${label}" />
+            <figcaption>${label}</figcaption>
+            ${cap}
+          </figure>`;
+        }).join("")}</div>
+      </div>`
+    : "";
+
+  const previewBlock = (!meshes.length ? previews : []).map((img) => {
+    const src = img.url || "";
+    const cap = img.caption ? `<div class="chat-art-caption">${escapeHtml(String(img.caption).slice(0, 220))}</div>` : "";
+    return `<div class="chat-mesh-preview-block">
+      <div class="chat-art-section-title">Превью mesh</div>
+      <figure class="chat-mesh-preview-still">
+        <img src="${src}?t=${Date.now()}" alt="mesh preview" data-lightbox="${src}" />
+      </figure>
+      ${cap}
+    </div>`;
+  }).join("");
+
+  const meshBlock = meshes.map((m) => {
+    const href = m.url || "#";
+    return `<div class="chat-mesh-preview-block">
+      <div class="chat-art-section-title">Превью mesh</div>
+      <div class="chat-mesh-viewer" data-chat-mesh-url="${href}"></div>
+      <div class="chat-art-actions">
+        <a class="btn ghost chat-mesh-dl" href="${href}" download>Скачать STL</a>
+      </div>
+    </div>`;
+  }).join("");
+
+  // If we have mesh but no PNG preview yet, still show 3D + download.
+  return `<div class="chat-artifacts">${viewsGrid}${previewBlock}${meshBlock}</div>`;
+}
+
 function renderChat(state) {
   const log = $("#chat-log");
   if (!log) return;
+  lastPipeline = state?.pipeline || null;
+  lastNotebook = state?.notebook || lastNotebook || [];
+  lastChatMessages = state?.messages || [];
   const messages = state?.messages || [];
+  const byId = Object.fromEntries(messages.filter((m) => m.id).map((m) => [m.id, m]));
+  let html = "";
   if (!messages.length) {
-    log.innerHTML = `<p class="muted chat-empty">${activeProjectHasMesh
-      ? "Опишите, что исправить в модели…"
-      : "Опишите объект для генерации…"}</p>`;
+    html = `<div class="chat-empty">${activeProjectHasMesh
+      ? "Опишите правку — агент сам запустит шаги. «Дальше» / «переделай» — текстом."
+      : "Опишите объект. Агент уточнит при необходимости и сам сгенерирует front → views → mesh."}</div>`;
   } else {
-    log.innerHTML = messages.map((m) => `
-      <div class="chat-bubble ${m.role === "user" ? "user" : "assistant"}">
-        <div class="chat-bubble-role">${m.role === "user" ? "Вы" : "MeshForge"}</div>
-        <div class="chat-bubble-text">${escapeHtml(m.content)}</div>
-      </div>
-    `).join("");
-  }
-  log.scrollTop = log.scrollHeight;
-
-  const draftBox = $("#chat-draft");
-  const draftText = $("#chat-draft-text");
-  const draftLabel = draftBox?.querySelector(".chat-draft-label");
-  const brief = (state?.edit_brief_en || "").trim();
-  const draft = (state?.draft_prompt_en || "").trim();
-  const show = !!(state?.ready && (brief || draft || (state?.intent === "create" && !draft && messages.length)));
-  if (draftBox && draftText) {
-    if (state?.ready && (brief || draft)) {
-      draftBox.classList.remove("hidden");
-      if (draftLabel) {
-        draftLabel.textContent = brief
-          ? "Brief для перегенерации (ComfyUI)"
-          : "Промпт для ComfyUI";
+    html = messages.map((m) => {
+      const isUser = m.role === "user";
+      const who = isUser ? "Вы" : "MeshForge";
+      const avatar = isUser ? "Вы" : "MF";
+      const mid = m.id || "";
+      let refHtml = "";
+      if (m.ref_ids?.length) {
+        const bits = m.ref_ids.map((rid) => {
+          const src = byId[rid];
+          const preview = src ? String(src.content || "").slice(0, 80) : rid;
+          return `<div class="chat-ref-quote" data-ref-id="${escapeHtml(rid)}">↩ ${escapeHtml(preview)}</div>`;
+        }).join("");
+        refHtml = bits;
       }
-      draftText.textContent = brief || draft;
-    } else if (state?.ready && state?.intent === "create" && !draft) {
-      draftBox.classList.remove("hidden");
-      if (draftLabel) draftLabel.textContent = "Готово к реконструкции из фото";
-      draftText.textContent = state.user_prompt || "Images → mesh";
-    } else {
-      draftBox.classList.add("hidden");
-      draftText.textContent = "";
-    }
+      const kindClass = m.kind && m.kind !== "text" ? ` kind-${escapeHtml(m.kind)}` : "";
+      const actions = mid
+        ? `<div class="chat-msg-actions">
+            <button type="button" class="chat-msg-action" data-ref-msg="${escapeHtml(mid)}" title="Сослаться">↩</button>
+            <button type="button" class="chat-msg-action" data-apply-msg="${escapeHtml(mid)}" data-apply-mode="main" title="Сделать основным">★</button>
+            <button type="button" class="chat-msg-action" data-apply-msg="${escapeHtml(mid)}" data-apply-mode="revise" title="Переделать на основе">↻</button>
+            <button type="button" class="chat-msg-action" data-restart-msg="${escapeHtml(mid)}" title="Перезапустить чат с этого сообщения">⟲</button>
+          </div>`
+        : "";
+      return `
+      <div class="chat-msg ${isUser ? "user" : "assistant"}${kindClass}" data-msg-id="${escapeHtml(mid)}">
+        <div class="chat-avatar" aria-hidden="true">${avatar}</div>
+        <div class="chat-msg-body">
+          <div class="chat-msg-meta">${who}${mid ? ` · <span class="chat-msg-id">${escapeHtml(mid.slice(0, 6))}</span>` : ""}${m.kind && m.kind !== "text" ? ` · ${escapeHtml(m.kind)}` : ""}</div>
+          ${refHtml}
+          <div class="chat-bubble-text">${escapeHtml(m.content)}</div>
+          ${renderMessageArtifacts(m.artifacts)}
+          ${actions}
+        </div>
+      </div>`;
+    }).join("");
   }
+  log.innerHTML = html;
+  if (loadingActive) {
+    const status = document.createElement("div");
+    status.id = "chat-status-msg";
+    status.className = "chat-msg assistant status";
+    status.innerHTML = chatStatusHtml(loadingLabel || "Обработка…", 2, 0);
+    log.appendChild(status);
+  }
+  mountChatMeshViewers();
+  log.scrollTop = log.scrollHeight;
+  renderNotebookList(lastNotebook);
+  syncReplyChip();
+}
+
+function syncReplyChip() {
+  const chip = $("#reply-chip");
+  const label = $("#reply-chip-label");
+  if (!chip || !label) return;
+  if (!replyRef?.id) {
+    chip.classList.add("hidden");
+    return;
+  }
+  chip.classList.remove("hidden");
+  label.textContent = `↩ ${replyRef.preview || replyRef.id}`;
+}
+
+function setReplyRef(id, preview) {
+  replyRef = id ? { id, preview: String(preview || id).slice(0, 100) } : null;
+  syncReplyChip();
+}
+
+function renderNotebookList(entries) {
+  const list = $("#notebook-list");
+  if (!list) return;
+  const items = entries || [];
+  if (!items.length) {
+    list.innerHTML = `<p class="muted">Пока пусто — записи появятся после шагов пайплайна и действий агента.</p>`;
+    return;
+  }
+  list.innerHTML = [...items].reverse().map((e) => {
+    const brief = e.brief_en || e.summary || e.user_prompt || "";
+    return `
+      <article class="notebook-entry" data-nb-id="${escapeHtml(e.id)}">
+        <div class="notebook-entry-title">${escapeHtml(e.title || e.kind)}</div>
+        <div class="notebook-entry-meta">${escapeHtml(e.kind)}${e.step ? ` · ${escapeHtml(e.step)}` : ""}${e.version != null ? ` · v${e.version}` : ""}</div>
+        ${brief ? `<div class="notebook-entry-body">${escapeHtml(String(brief).slice(0, 180))}</div>` : ""}
+        <div class="notebook-entry-actions">
+          <button type="button" class="btn ghost" data-ref-nb="${escapeHtml(e.id)}">↩ ссылка</button>
+          <button type="button" class="btn ghost" data-apply-nb="${escapeHtml(e.id)}" data-apply-mode="main">★ основное</button>
+          <button type="button" class="btn ghost" data-apply-nb="${escapeHtml(e.id)}" data-apply-mode="revise">↻ переделать</button>
+        </div>
+      </article>`;
+  }).join("");
+}
+
+function toggleNotebook(open) {
+  const drawer = $("#notebook-drawer");
+  if (!drawer) return;
+  const show = open == null ? drawer.classList.contains("hidden") : open;
+  drawer.classList.toggle("hidden", !show);
 }
 
 function escapeHtml(text) {
@@ -344,12 +731,14 @@ async function loadChat() {
   }
 }
 
-async function sendChatMessage() {
+async function sendChatMessage(extraText = "", extraRefs = null) {
   if (!activeProjectId) return toast("Выберите проект", "error");
-  const text = ($("#chat-input").value || "").trim();
-  const images = Array.from($("#chat-images").files || []);
-  const meshFile = $("#chat-mesh")?.files?.[0];
-  if (!text && !images.length && !meshFile) {
+  if (loadingActive) return;
+  const text = (extraText || ($("#chat-input").value || "").trim());
+  const images = pendingImages.slice();
+  const meshFile = pendingMesh;
+  const refs = extraRefs || (replyRef?.id ? [replyRef.id] : []);
+  if (!text && !images.length && !meshFile && !refs.length) {
     return toast("Введите сообщение, приложите фото или mesh", "error");
   }
 
@@ -368,40 +757,102 @@ async function sendChatMessage() {
       api(`/api/projects/${activeProjectId}/jobs`, { method: "POST", body: fd })
     );
     clearChatMesh();
-    if (!imported || (!text && !images.length)) return;
+    if (!imported || (!text && !images.length && !refs.length)) return;
   }
 
   const fd = new FormData();
   fd.append("text", text);
+  if (refs.length) fd.append("ref_ids", refs.join(","));
   images.forEach((file) => fd.append("images", file));
 
-  setLoading(true, "LLM…");
+  // Optimistic UI: clear composer and show the user bubble immediately.
+  if (!extraText) $("#chat-input").value = "";
+  clearChatImages();
+  setReplyRef(null);
+  const optimistic = {
+    messages: [
+      ...lastChatMessages,
+      {
+        id: `tmp-${Date.now()}`,
+        role: "user",
+        content: text || (images.length ? "(фото)" : "(сообщение)"),
+        ref_ids: refs,
+        kind: "text",
+        artifacts: [],
+      },
+    ],
+    notebook: lastNotebook,
+    pipeline: lastPipeline,
+  };
+  setLoading(true, "Агент…");
+  startProgressPolling(activeProjectId);
+  renderChat(optimistic);
+
   try {
     const state = await api(`/api/projects/${activeProjectId}/chat/messages`, { method: "POST", body: fd });
-    $("#chat-input").value = "";
-    const imagesInput = $("#chat-images");
-    if (imagesInput) imagesInput.value = "";
-    const drop = $("#chat-images-drop");
-    if (drop) {
-      drop.classList.remove("has-file");
-      drop.querySelector("span").textContent = "Фото";
-    }
     renderChat(state);
   } catch (e) {
+    if (!extraText && text) $("#chat-input").value = text;
     toast(e.message?.slice(0, 200) || String(e), "error");
+    await loadChat();
   } finally {
     setLoading(false);
   }
 }
 
-function clearChatMesh() {
-  const meshInput = $("#chat-mesh");
-  if (meshInput) meshInput.value = "";
-  const drop = $("#chat-mesh-drop");
-  if (drop) {
-    drop.classList.remove("has-file");
-    drop.querySelector("span").textContent = "Mesh";
+async function restartChatFromMessage(messageId) {
+  if (!activeProjectId) return toast("Выберите проект", "error");
+  if (!messageId || String(messageId).startsWith("tmp-")) {
+    return toast("Дождитесь ответа агента", "error");
   }
+  if (loadingActive) return;
+  const msg = lastChatMessages.find((m) => m.id === messageId);
+  const preview = (msg?.content || messageId).slice(0, 80);
+  if (!confirm(`Перезапустить чат с этого сообщения?\n\n«${preview}»\n\nВсё после него будет удалено из истории, пайплайн сбросится.`)) {
+    return;
+  }
+
+  // Optimistic truncate in UI
+  const idx = lastChatMessages.findIndex((m) => m.id === messageId);
+  let cut = idx;
+  if (cut >= 0) {
+    while (cut >= 0 && lastChatMessages[cut].role !== "user") cut -= 1;
+  }
+  const kept = cut >= 0 ? lastChatMessages.slice(0, cut) : lastChatMessages;
+  const target = cut >= 0 ? lastChatMessages[cut] : null;
+  setLoading(true, "Перезапуск…");
+  startProgressPolling(activeProjectId);
+  renderChat({
+    messages: [
+      ...kept,
+      ...(target
+        ? [{ ...target, id: `tmp-restart-${Date.now()}` }]
+        : []),
+    ],
+    notebook: lastNotebook,
+    pipeline: null,
+  });
+
+  try {
+    const fd = new FormData();
+    fd.append("message_id", messageId);
+    const state = await api(`/api/projects/${activeProjectId}/chat/restart`, { method: "POST", body: fd });
+    renderChat(state);
+  } catch (e) {
+    toast(e.message?.slice(0, 200) || String(e), "error");
+    await loadChat();
+  } finally {
+    setLoading(false);
+  }
+}
+
+async function applyRefAsPrompt(refId, mode, kind = "message") {
+  const verb = mode === "revise" ? "переделай на основе" : "сделай основным";
+  const prefix = kind === "notebook" ? "записи блокнота" : "сообщения";
+  const text = mode === "revise"
+    ? `Переделай на основании этой ${prefix} (id ${refId}).`
+    : `Примени эту ${prefix} (id ${refId}) как основной промпт.`;
+  await sendChatMessage(text, [refId]);
 }
 
 async function confirmChat() {
@@ -441,7 +892,8 @@ function renderHistory(p) {
       ? `<div class="hist-views">${images.map((a) => {
           const name = (a.path || "").split(/[/\\]/).pop();
           if (!name) return "";
-          return `<img class="hist-view" src="/api/projects/${p.id}/artifacts/${v.version}/${encodeURIComponent(name)}?t=${Date.now()}" alt="${a.label || name}" title="${a.label || name}" />`;
+          const src = `/api/projects/${p.id}/artifacts/${v.version}/${encodeURIComponent(name)}?t=${Date.now()}`;
+          return `<img class="hist-view" src="${src}" data-lightbox="${src}" alt="${a.label || name}" title="${a.label || name}" />`;
         }).join("")}</div>`
       : "";
     return `
@@ -463,18 +915,45 @@ async function loadMesh(url) {
 }
 
 function afterOperation(result) {
-  renderProjectMeta(result.project);
-  renderHistory(result.project);
+  if (!result) return;
+  if (result.project) {
+    renderProjectMeta(result.project);
+    renderHistory(result.project);
+  }
   if (result.qc_report) $("#qc-log").textContent = result.qc_report;
-  toast(result.message);
-  if (result.project.mesh_url) {
+  toast(result.message || "OK");
+  if (result.pipeline) {
+    lastPipeline = result.pipeline;
+    // Refresh chat to show step card + messages
+  }
+  if (result.project?.mesh_url && result.pipeline?.step === "done") {
     loadMesh(result.project.mesh_url);
-    $("#viewer-empty").classList.add("hidden");
-    $("#btn-download").classList.remove("hidden");
+    $("#viewer-empty")?.classList.add("hidden");
+    $("#btn-download")?.classList.remove("hidden");
+    $("#btn-download").href = result.project.mesh_url;
+  } else if (result.project?.mesh_url && !result.pipeline) {
+    loadMesh(result.project.mesh_url);
+    $("#viewer-empty")?.classList.add("hidden");
+    $("#btn-download")?.classList.remove("hidden");
     $("#btn-download").href = result.project.mesh_url;
   }
   loadProjects(activeProjectId);
   loadChat();
+}
+
+async function continuePipeline() {
+  if (!activeProjectId) return toast("Выберите проект", "error");
+  runOp("Далее…", () => api(`/api/projects/${activeProjectId}/pipeline/continue`, { method: "POST" }));
+}
+
+async function redoPipeline(step = "front") {
+  if (!activeProjectId) return toast("Выберите проект", "error");
+  runOp("Переделать…", () =>
+    api(`/api/projects/${activeProjectId}/pipeline/redo`, {
+      method: "POST",
+      body: JSON.stringify({ step }),
+    })
+  );
 }
 
 async function initLLM() {
@@ -514,8 +993,107 @@ function bindActions() {
   });
 
   $("#btn-chat-send")?.addEventListener("click", () => sendChatMessage());
-  $("#btn-chat-confirm")?.addEventListener("click", () => confirmChat());
+  $("#btn-chat-stop")?.addEventListener("click", () => stopActiveJob());
   $("#btn-regenerate")?.addEventListener("click", () => regenerateProject());
+  $("#btn-open-workspace")?.addEventListener("click", () => {
+    if (!activeProjectId) return toast("Выберите проект", "error");
+    setUiMode("workspace");
+  });
+  $("#btn-back-chat")?.addEventListener("click", () => setUiMode("chat"));
+  $("#btn-open-settings")?.addEventListener("click", () => setUiMode("settings"));
+  $("#btn-close-settings")?.addEventListener("click", () => setUiMode(previousUiMode || "chat"));
+  $("#lightbox-close")?.addEventListener("click", () => closeLightbox());
+  $("#lightbox")?.addEventListener("click", (e) => {
+    if (e.target === $("#lightbox")) closeLightbox();
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      closeLightbox();
+      toggleNotebook(false);
+    }
+  });
+  document.addEventListener("click", (e) => {
+    const removeBtn = e.target?.closest?.("[data-remove]");
+    if (removeBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      const kind = removeBtn.getAttribute("data-remove");
+      const index = Number(removeBtn.getAttribute("data-index") ?? -1);
+      removeAttachment(kind, index);
+      return;
+    }
+    const confirmBtn = e.target?.closest?.('[data-chat-action="confirm"]');
+    if (confirmBtn) {
+      e.preventDefault();
+      confirmChat();
+      return;
+    }
+    const stopBtn = e.target?.closest?.("[data-chat-stop]");
+    if (stopBtn) {
+      e.preventDefault();
+      stopActiveJob();
+      return;
+    }
+    const refMsg = e.target?.closest?.("[data-ref-msg]");
+    if (refMsg) {
+      e.preventDefault();
+      const id = refMsg.getAttribute("data-ref-msg");
+      const msg = lastChatMessages.find((m) => m.id === id);
+      setReplyRef(id, msg?.content || id);
+      $("#chat-input")?.focus();
+      return;
+    }
+    const applyMsg = e.target?.closest?.("[data-apply-msg]");
+    if (applyMsg) {
+      e.preventDefault();
+      applyRefAsPrompt(
+        applyMsg.getAttribute("data-apply-msg"),
+        applyMsg.getAttribute("data-apply-mode") || "main",
+        "message",
+      );
+      return;
+    }
+    const restartMsg = e.target?.closest?.("[data-restart-msg]");
+    if (restartMsg) {
+      e.preventDefault();
+      restartChatFromMessage(restartMsg.getAttribute("data-restart-msg"));
+      return;
+    }
+    const refNb = e.target?.closest?.("[data-ref-nb]");
+    if (refNb) {
+      e.preventDefault();
+      const id = refNb.getAttribute("data-ref-nb");
+      const entry = lastNotebook.find((n) => n.id === id);
+      setReplyRef(id, entry?.title || entry?.brief_en || id);
+      $("#chat-input")?.focus();
+      return;
+    }
+    const applyNb = e.target?.closest?.("[data-apply-nb]");
+    if (applyNb) {
+      e.preventDefault();
+      applyRefAsPrompt(
+        applyNb.getAttribute("data-apply-nb"),
+        applyNb.getAttribute("data-apply-mode") || "main",
+        "notebook",
+      );
+      return;
+    }
+    const lb = e.target?.closest?.("[data-lightbox]");
+    if (lb) {
+      e.preventDefault();
+      openLightbox(lb.getAttribute("data-lightbox"), lb.getAttribute("alt") || "");
+      return;
+    }
+    const actionBtn = e.target?.closest?.("[data-pipe-action]");
+    if (!actionBtn) return;
+    const action = actionBtn.getAttribute("data-pipe-action");
+    if (action === "continue") continuePipeline();
+    else if (action === "redo") redoPipeline(actionBtn.getAttribute("data-redo-step") || "front");
+    else if (action === "open-project") setUiMode("workspace");
+  });
+  $("#btn-notebook")?.addEventListener("click", () => toggleNotebook());
+  $("#btn-notebook-close")?.addEventListener("click", () => toggleNotebook(false));
+  $("#reply-chip-clear")?.addEventListener("click", () => setReplyRef(null));
   $("#chat-input")?.addEventListener("keydown", (e) => {
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
@@ -561,26 +1139,26 @@ function bindActions() {
   });
   $("#btn-reset-cam").addEventListener("click", () => viewer.resetCamera());
 
-  $("#toggle-settings").addEventListener("click", () => $("#settings-body").classList.toggle("hidden"));
-  $("#toggle-gen-settings")?.addEventListener("click", () => $("#gen-settings-body").classList.toggle("hidden"));
   $("#gen-quality")?.addEventListener("change", () => {
     applyPresetToKnobs($("#gen-quality").value);
   });
   $("#btn-gen-save")?.addEventListener("click", async () => {
     const quality_preset = $("#gen-quality").value;
     const view_consistency = $("#gen-views")?.value || "img2img";
+    const view_style = $("#gen-style")?.value || "clay";
     const mesh_postprocess = $("#gen-postprocess")?.checked ?? true;
     const knobs = readGenKnobs();
     const needsHeavyDl = quality_preset === "quality" || view_consistency === "zero123";
     setLoading(true, needsHeavyDl
       ? "Сохранение + загрузка checkpoints (может занять несколько минут)…"
-      : "Сохранение…");
+      : "Сохранение…", { overlay: true });
     try {
       const data = await api("/api/settings/generation", {
         method: "PUT",
         body: JSON.stringify({
           quality_preset,
           view_consistency,
+          view_style,
           mesh_postprocess,
           knobs,
           download_missing: true,
@@ -729,6 +1307,20 @@ function renderGenerationSettings(data) {
     }
     if (data.view_consistency) views.value = data.view_consistency;
   }
+  const styleSel = $("#gen-style");
+  if (styleSel) {
+    const styles = data.view_styles || {};
+    if (Object.keys(styles).length) {
+      styleSel.innerHTML = "";
+      for (const [key, info] of Object.entries(styles)) {
+        const opt = document.createElement("option");
+        opt.value = key;
+        opt.textContent = info.label || key;
+        styleSel.appendChild(opt);
+      }
+    }
+    if (data.view_style) styleSel.value = data.view_style;
+  }
   const post = $("#gen-postprocess");
   if (post) post.checked = data.mesh_postprocess !== false;
   fillGenKnobs(data.knobs || data.active?.knobs);
@@ -742,6 +1334,7 @@ function renderGenerationSettings(data) {
       `Hunyuan: ${knobs.mesh_checkpoint || active.mesh_checkpoint || "—"}`,
       `  steps=${knobs.mesh_steps ?? active.mesh_steps} cfg=${knobs.mesh_cfg ?? active.mesh_cfg} res=${knobs.mesh_resolution} octree=${knobs.mesh_octree_resolution}`,
       `проекции: ${active.view_consistency || data.view_consistency || "img2img"}`,
+      `стиль: ${active.view_style || data.view_style || "clay"}`,
       `postprocess: ${active.mesh_postprocess !== false && data.mesh_postprocess !== false ? "on" : "off"}`,
       active.view_consistency === "zero123" || data.view_consistency === "zero123"
         ? `zero123: ${knobs.zero123_checkpoint || active.zero123_checkpoint || "stable_zero123.ckpt"} ${knobs.zero123_steps}st cfg=${knobs.zero123_cfg}`
@@ -774,6 +1367,7 @@ async function initGeneration() {
 }
 
 async function init() {
+  setUiMode("chat");
   viewer = new MeshViewer($("#viewer-canvas"));
   bindRanges();
   bindFileDrop("#chat-images", "#chat-images-drop");

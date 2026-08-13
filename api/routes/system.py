@@ -75,6 +75,7 @@ async def put_generation(body: GenerationSettingsUpdate) -> GenerationSettings:
                 get_orchestrator(),
                 quality_preset=body.quality_preset,
                 view_consistency=body.view_consistency,
+                view_style=body.view_style,
                 mesh_postprocess=body.mesh_postprocess,
                 knobs=body.knobs.model_dump() if body.knobs is not None else None,
                 download_missing=body.download_missing,

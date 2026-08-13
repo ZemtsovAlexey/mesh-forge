@@ -13,6 +13,8 @@ from api.schemas import (
     DuplicateProjectRequest,
     ExportInfo,
     OperationResult,
+    PipelineRedoRequest,
+    PipelineStateInfo,
     ProgressInfo,
     ProjectDetail,
     ProjectSummary,
@@ -21,12 +23,16 @@ from api.schemas import (
 from api.services import (
     build_job,
     confirm_project_chat,
+    continue_project_pipeline,
     export_info,
+    get_pipeline,
     get_project_chat,
     list_project_summaries,
     post_project_chat_message,
     project_detail,
+    redo_project_pipeline,
     regenerate_project,
+    restart_project_chat_from_message,
     run_generation_job,
     save_upload_to_tmp,
 )
@@ -124,6 +130,31 @@ def get_project_artifact(project_id: str, version: int, filename: str):
     return FileResponse(path, media_type=media, filename=path.name)
 
 
+@router.get("/{project_id}/media/{file_path:path}")
+def get_project_media(project_id: str, file_path: str):
+    try:
+        manifest = load_project(project_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    from mesh_forge.application.chat_results import resolve_media_path
+
+    try:
+        path = resolve_media_path(manifest, file_path)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    suffix = path.suffix.lower()
+    media = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+        ".stl": "model/stl",
+        ".obj": "text/plain",
+        ".glb": "model/gltf-binary",
+    }.get(suffix, "application/octet-stream")
+    return FileResponse(path, media_type=media, filename=path.name)
+
+
 @router.get("/{project_id}/export", response_model=ExportInfo)
 def get_project_export(project_id: str) -> ExportInfo:
     try:
@@ -155,6 +186,23 @@ def get_project_progress(project_id: str) -> ProgressInfo:
         )
 
 
+@router.post("/{project_id}/cancel")
+def post_project_cancel(project_id: str) -> dict:
+    """Request stop for the active chat/Comfy job."""
+    try:
+        load_project(project_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    active = prog.request_cancel(project_id)
+    try:
+        from mesh_forge.adapters import ComfyUiClient
+
+        ComfyUiClient().interrupt()
+    except Exception:
+        pass
+    return {"ok": True, "was_active": active, "message": "Остановка запрошена"}
+
+
 @router.get("/{project_id}/chat", response_model=ChatStateInfo)
 def get_chat(project_id: str) -> ChatStateInfo:
     try:
@@ -168,6 +216,7 @@ def get_chat(project_id: str) -> ChatStateInfo:
 async def post_chat_message(
     project_id: str,
     text: str = Form(""),
+    ref_ids: str = Form(""),
     images: list[UploadFile] | None = File(None),
 ) -> ChatStateInfo:
     try:
@@ -192,12 +241,37 @@ async def post_chat_message(
             dest.write_bytes(content)
             image_count += 1
 
+    refs = [part.strip() for part in (ref_ids or "").replace(";", ",").split(",") if part.strip()]
+
     try:
         data = await run_in_threadpool(
             post_project_chat_message,
             manifest,
             text=text,
             has_images=image_count > 0,
+            ref_ids=refs,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc
+    return ChatStateInfo(**data)
+
+
+@router.post("/{project_id}/chat/restart", response_model=ChatStateInfo)
+async def post_chat_restart(
+    project_id: str,
+    message_id: str = Form(...),
+) -> ChatStateInfo:
+    try:
+        manifest = load_project(project_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    try:
+        data = await run_in_threadpool(
+            restart_project_chat_from_message,
+            manifest,
+            message_id,
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
@@ -252,6 +326,65 @@ async def post_chat_confirm(
         raise HTTPException(400, str(exc)) from exc
     except RuntimeError as exc:
         raise HTTPException(500, str(exc)) from exc
+
+
+@router.get("/{project_id}/pipeline", response_model=PipelineStateInfo)
+def get_project_pipeline(project_id: str) -> PipelineStateInfo:
+    try:
+        manifest = load_project(project_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return PipelineStateInfo(**get_pipeline(manifest))
+
+
+@router.post("/{project_id}/pipeline/continue", response_model=OperationResult)
+async def post_pipeline_continue(project_id: str) -> OperationResult:
+    try:
+        manifest = load_project(project_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    try:
+        return await run_in_threadpool(lambda: continue_project_pipeline(manifest))
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+
+@router.post("/{project_id}/pipeline/redo", response_model=OperationResult)
+async def post_pipeline_redo(project_id: str, body: PipelineRedoRequest | None = None) -> OperationResult:
+    try:
+        manifest = load_project(project_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    payload = body or PipelineRedoRequest()
+    try:
+        return await run_in_threadpool(
+            lambda: redo_project_pipeline(
+                manifest,
+                step=payload.step,
+                brief_en=payload.brief_en,
+            )
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(500, str(exc)) from exc
+
+
+@router.get("/{project_id}/pipeline/image/{stage}/{label}")
+def get_pipeline_image(project_id: str, stage: str, label: str) -> FileResponse:
+    try:
+        manifest = load_project(project_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    from mesh_forge.application.stepped_pipeline import resolve_pipeline_image
+
+    try:
+        path = resolve_pipeline_image(manifest, stage, label)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return FileResponse(path)
 
 
 @router.post("/{project_id}/regenerate", response_model=OperationResult)
@@ -320,13 +453,15 @@ async def post_job(
             smooth_iters=smooth_iters,
         )
     elif source_mesh and prompt.strip() and not image_paths:
-        # Legacy text+mesh: semantic regen via ComfyUI (not filter ops).
+        # Text+mesh: geometry edit on current mesh (semantic regen is chat-confirm only).
         job = build_job(
             project_id=manifest.id,
             prompt=prompt,
             user_prompt=prompt,
             generation_prompt=prompt,
-            semantic_regen=True,
+            source_mesh=source_mesh,
+            use_current_mesh=True,
+            semantic_regen=False,
             solidify_mm=solidify_mm,
         )
     else:

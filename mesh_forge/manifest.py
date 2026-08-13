@@ -60,6 +60,47 @@ class ProjectManifest:
                 return self.root / entry.mesh
         return None
 
+    def find_view_anchor(self) -> Path | None:
+        """Clay/studio reconstruction views only (front preferred)."""
+        view_labels = ("front", "left", "back", "right")
+        for entry in reversed(self.versions):
+            by_label: dict[str, Path] = {}
+            for art in entry.artifacts:
+                path = self.root / art.path
+                if not path.is_file() or art.kind != "image":
+                    continue
+                label = (art.label or path.stem).lower()
+                stage = (art.stage or "").lower()
+                source = (art.source or "").lower()
+                if label in view_labels and (stage in {"views", "view", ""} or source in {"view", "views"}):
+                    by_label[label] = path
+                elif label in view_labels and stage not in {"input", "reference"}:
+                    by_label[label] = path
+            for label in view_labels:
+                if label in by_label:
+                    return by_label[label]
+        return None
+
+    def find_reference_photo(self) -> Path | None:
+        """User-provided reference / input photo (not reconstruction views)."""
+        for entry in reversed(self.versions):
+            for art in entry.artifacts:
+                path = self.root / art.path
+                if not path.is_file() or art.kind != "image":
+                    continue
+                stage = (art.stage or "").lower()
+                source = (art.source or "").lower()
+                label = (art.label or path.stem).lower()
+                if stage in {"input", "reference"} or source in {"reference", "input"}:
+                    return path
+                if label.startswith("image_") or label in {"ref", "reference"}:
+                    return path
+        return None
+
+    def find_anchor_image(self) -> Path | None:
+        """Guided-edit img2img anchor: reconstruction views only (never colorful ref photos)."""
+        return self.find_view_anchor()
+
     def save(self) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         data = {

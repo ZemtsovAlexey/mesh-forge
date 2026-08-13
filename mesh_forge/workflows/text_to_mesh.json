@@ -3,6 +3,7 @@
     "text_to_front": "text_to_front.json",
     "text_to_multiview": "text_to_multiview.json",
     "zero123_orbits": "zero123_orbits.json",
+    "guided_edit_multiview": "guided_edit_multiview.json",
     "multiview_to_mesh": "multiview_to_mesh.json",
     "image_to_mesh": "image_to_mesh.json"
   },

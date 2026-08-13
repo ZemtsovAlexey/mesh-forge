@@ -155,10 +155,10 @@ def keep_largest_component(
     single: bool = True,
     min_ratio: float = 0.02,
 ) -> trimesh.Trimesh:
-    """Drop floaters / duplicate Hunyuan bodies; keep the primary figurine.
+    """Drop floaters / duplicate Hunyuan bodies; keep the primary subject.
 
     ``single=True`` (default): keep the largest component **plus** nearby
-    fragments that belong to the same body (legs/ears often disconnect). Far
+    fragments that belong to the same body (thin parts often disconnect). Far
     twin shells of similar size are dropped.
 
     ``single=False``: keep every component above ``min_ratio`` of the largest.
@@ -609,10 +609,19 @@ def apply_operations(mesh_path: Path, operations: list[dict[str, Any]], out_path
             mesh = remesh_voxel(mesh, float(op.get("voxel_mm", 1.0)))
         elif name == "fill_holes":
             try:
-                if len(mesh.faces) < 200_000:
+                if len(mesh.faces) < 500_000:
                     trimesh.repair.fill_holes(mesh)
                 else:
-                    logger.warning("fill_holes skipped on large mesh (%s faces)", len(mesh.faces))
+                    # Large nets: try PyMeshLab hole close when available.
+                    try:
+                        from mesh_forge.ops.repair import repair_with_pymeshlab
+
+                        mesh = repair_with_pymeshlab(mesh, smooth_iters=0)
+                    except Exception as exc:
+                        logger.warning("fill_holes skipped on large mesh (%s faces): %s", len(mesh.faces), exc)
             except Exception as exc:
                 logger.warning("fill_holes failed: %s", exc)
+        elif name == "remove_needles":
+            min_edge = float(op.get("min_edge_mm", 0.08))
+            mesh = remove_needle_faces(mesh, min_edge_mm=min_edge)
     return save_mesh(mesh, out_path)

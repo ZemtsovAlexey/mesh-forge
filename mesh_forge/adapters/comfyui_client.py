@@ -26,7 +26,9 @@ VIEW_LABELS = ("front", "left", "back", "right")
 class WorkflowPack:
     text_to_front: Path
     text_to_multiview: Path
+    views_from_front: Path
     zero123_orbits: Path
+    guided_edit_multiview: Path
     multiview_to_mesh: Path
     image_to_mesh: Path
     front_output: str
@@ -195,6 +197,296 @@ class ComfyUiClient:
 
         return TextToMeshResult(views=views, mesh=mesh)
 
+    def generate_front(self, prompt: str, work_dir: Path, *, project_id: str) -> ImageSet:
+        """Text → single front clay view (stepped pipeline)."""
+        self.config = load_config()
+        if not self.config.comfyui.enabled:
+            raise RuntimeError("ComfyUI is disabled in config.yaml")
+        work_dir.mkdir(parents=True, exist_ok=True)
+        pack = self._load_workflow_pack()
+        run_id = uuid.uuid4().hex[:8]
+        try:
+            with self._scheduler.acquire("ComfyUI front", project_id=project_id):
+                with httpx.Client(timeout=180.0) as client:
+                    prog.update(project_id, 20, "front")
+                    front_wf = self._load_text_to_front_workflow(
+                        pack.text_to_front, prompt=prompt, run_id=run_id
+                    )
+                    history = self._submit_workflow(client, front_wf)
+                    views = self._collect_front_image(
+                        client,
+                        history=history,
+                        output_dir=work_dir / "views",
+                        output_node=pack.front_output,
+                    )
+                    if not views.items:
+                        raise RuntimeError("ComfyUI produced no front view")
+                    return views
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(self._format_prompt_error(exc)) from exc
+        except httpx.HTTPError as exc:
+            raise RuntimeError(
+                f"ComfyUI is unavailable at {self.base_url}. "
+                "Start ComfyUI on the server and make sure its API is reachable."
+            ) from exc
+
+    def generate_views_from_front(
+        self,
+        prompt: str,
+        front_image: Path,
+        work_dir: Path,
+        *,
+        project_id: str,
+    ) -> ImageSet:
+        """Approved front → left/back/right (img2img or Zero123) for stepped pipeline."""
+        self.config = load_config()
+        if not self.config.comfyui.enabled:
+            raise RuntimeError("ComfyUI is disabled in config.yaml")
+        if not front_image.is_file():
+            raise FileNotFoundError(f"Front image missing: {front_image}")
+        work_dir.mkdir(parents=True, exist_ok=True)
+        pack = self._load_workflow_pack()
+        run_id = uuid.uuid4().hex[:8]
+        mode = self._view_consistency()
+
+        try:
+            with self._scheduler.acquire("ComfyUI views-from-front", project_id=project_id):
+                with httpx.Client(timeout=180.0) as client:
+                    prog.update(project_id, 40, "views")
+                    views_dir = work_dir / "views"
+                    views_dir.mkdir(parents=True, exist_ok=True)
+                    # Keep a stable local copy of the approved front.
+                    front_dest = views_dir / "front.png"
+                    if front_image.resolve() != front_dest.resolve():
+                        front_dest.write_bytes(front_image.read_bytes())
+                    front_views = ImageSet(
+                        items=[ImageArtifact(path=front_dest, label="front", role="view", stage="views")]
+                    )
+                    if mode == "off":
+                        return front_views
+                    if mode == "zero123":
+                        return self._generate_zero123_orbits(
+                            client, pack=pack, front_views=front_views, work_dir=work_dir, run_id=run_id
+                        )
+                    uploaded = self._upload_input_image(
+                        client, front_dest, subfolder=f"meshforge/{run_id}"
+                    )
+                    workflow = self._load_views_from_front_workflow(
+                        pack.views_from_front,
+                        prompt=prompt,
+                        uploaded_front=uploaded,
+                        run_id=run_id,
+                    )
+                    history = self._submit_workflow(client, workflow)
+                    views = self._collect_named_images(
+                        client,
+                        history=history,
+                        output_dir=views_dir,
+                        output_nodes=pack.view_outputs,
+                    )
+                    # Prefer the approved front over regenerated SaveImage front.
+                    items = [
+                        ImageArtifact(path=front_dest, label="front", role="view", stage="views")
+                    ]
+                    for label in ("left", "back", "right"):
+                        art = views.get(label)
+                        if art is None:
+                            raise RuntimeError(f"Views-from-front missing {label}")
+                        items.append(art)
+                    return ImageSet(items=items)
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(self._format_prompt_error(exc)) from exc
+        except httpx.HTTPError as exc:
+            raise RuntimeError(
+                f"ComfyUI is unavailable at {self.base_url}. "
+                "Start ComfyUI on the server and make sure its API is reachable."
+            ) from exc
+
+    def mesh_from_views(
+        self,
+        views: ImageSet,
+        work_dir: Path,
+        *,
+        project_id: str,
+    ) -> MeshArtifact:
+        """Approved views → Hunyuan mesh (stepped pipeline)."""
+        return self.run_images_to_mesh(views, work_dir, project_id=project_id)
+
+    def run_guided_edit(
+        self,
+        prompt: str,
+        anchor_image: Path,
+        work_dir: Path,
+        *,
+        project_id: str,
+        count: int = 4,
+    ) -> TextToMeshResult:
+        """Preserve-identity edit: img2img from anchor front → orbits → mesh."""
+        self.config = load_config()
+        if not self.config.comfyui.enabled:
+            raise RuntimeError("ComfyUI is disabled in config.yaml")
+        if not anchor_image.is_file():
+            raise FileNotFoundError(f"Guided-edit anchor missing: {anchor_image}")
+
+        work_dir.mkdir(parents=True, exist_ok=True)
+        pack = self._load_workflow_pack()
+        run_id = uuid.uuid4().hex[:8]
+        mode = self._view_consistency()
+
+        try:
+            with self._scheduler.acquire("ComfyUI guided edit", project_id=project_id):
+                with httpx.Client(timeout=180.0) as client:
+                    prog.update(project_id, 14, "guided")
+                    uploaded_anchor = self._upload_input_image(
+                        client, anchor_image, subfolder=f"meshforge/{run_id}"
+                    )
+                    if mode == "img2img":
+                        view_workflow = self._load_guided_edit_multiview_workflow(
+                            pack.guided_edit_multiview,
+                            prompt=prompt,
+                            uploaded_anchor=uploaded_anchor,
+                            run_id=run_id,
+                        )
+                        view_history = self._submit_workflow(client, view_workflow)
+                        prog.update(project_id, 34, "views")
+                        views = self._collect_named_images(
+                            client,
+                            history=view_history,
+                            output_dir=work_dir / "views",
+                            output_nodes=pack.view_outputs,
+                        )
+                        if len(views.items) < 4:
+                            raise RuntimeError("Guided edit produced incomplete multiview output")
+                    else:
+                        # Edit front only via guided workflow's front path is heavy;
+                        # fall back: guided multiview when possible, else edit+zero123.
+                        view_workflow = self._load_guided_edit_multiview_workflow(
+                            pack.guided_edit_multiview,
+                            prompt=prompt,
+                            uploaded_anchor=uploaded_anchor,
+                            run_id=run_id,
+                        )
+                        view_history = self._submit_workflow(client, view_workflow)
+                        prog.update(project_id, 34, "views")
+                        views = self._collect_named_images(
+                            client,
+                            history=view_history,
+                            output_dir=work_dir / "views",
+                            output_nodes=pack.view_outputs,
+                        )
+                        if mode == "off":
+                            front = views.get("front")
+                            if front is None:
+                                raise RuntimeError("Guided edit missing front view")
+                            views = ImageSet(items=[front])
+                        elif mode == "zero123" and views.get("front") is not None:
+                            # Prefer Zero123 orbits from the edited front when configured.
+                            front_only = ImageSet(items=[views.get("front")])
+                            views = self._generate_zero123_orbits(
+                                client,
+                                pack=pack,
+                                front_views=front_only,
+                                work_dir=work_dir,
+                                run_id=run_id,
+                            )
+
+                    prog.update(project_id, 62, "mesh")
+                    if mode == "off" or len(views.items) == 1:
+                        front = views.get("front")
+                        if front is None:
+                            raise RuntimeError("Front view missing after guided edit")
+                        uploaded_front = self._upload_input_image(
+                            client, front.path, subfolder=f"meshforge/{run_id}"
+                        )
+                        mesh_workflow = self._load_image_to_mesh_workflow(
+                            pack.image_to_mesh,
+                            uploaded_front=uploaded_front,
+                            run_id=run_id,
+                        )
+                        output_node = pack.image_mesh_output
+                    else:
+                        uploaded = self._upload_views(client, views, subfolder=f"meshforge/{run_id}")
+                        mesh_workflow = self._load_multiview_to_mesh_workflow(
+                            pack.multiview_to_mesh,
+                            uploaded_views=uploaded,
+                            run_id=run_id,
+                        )
+                        output_node = pack.mesh_output
+                    mesh_history = self._submit_workflow(client, mesh_workflow)
+                    mesh = self._collect_mesh_artifact(
+                        client,
+                        history=mesh_history,
+                        output_dir=work_dir / "mesh",
+                        output_node=output_node,
+                    )
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(self._format_prompt_error(exc)) from exc
+        except httpx.HTTPError as exc:
+            raise RuntimeError(
+                f"ComfyUI is unavailable at {self.base_url}. "
+                "Start ComfyUI on the server and make sure its API is reachable."
+            ) from exc
+
+        return TextToMeshResult(views=views, mesh=mesh)
+
+    def _load_guided_edit_multiview_workflow(
+        self,
+        workflow_path: Path,
+        *,
+        prompt: str,
+        uploaded_anchor: str,
+        run_id: str,
+    ) -> dict[str, Any]:
+        workflow = self._read_workflow(workflow_path)
+        base_seed = random.randint(1, 2**31 - 1)
+        c = self.config.comfyui
+        ckpt = (c.checkpoint or "").lower()
+        view_denoise = float(c.view_denoise_turbo if "turbo" in ckpt else c.view_denoise)
+        edit_denoise = float(getattr(c, "edit_denoise", 0.28) or 0.28)
+        edit_denoise = min(max(edit_denoise, 0.12), 0.55)
+        negative = self._build_view_negative(c.negative_prompt)
+        subject = self._normalize_subject_prompt(prompt)
+        replacements: dict[str, Any] = {
+            "__CHECKPOINT__": c.checkpoint,
+            "__ANCHOR_IMAGE__": uploaded_anchor,
+            "__NEGATIVE_PROMPT__": negative,
+            "__WIDTH__": c.width,
+            "__HEIGHT__": c.height,
+            "__STEPS__": c.steps,
+            "__CFG__": c.cfg,
+            "__SAMPLER__": c.view_sampler or "euler",
+            "__SCHEDULER__": c.view_scheduler or "sgm_uniform",
+            "__EDIT_DENOISE__": edit_denoise,
+            "__VIEW_DENOISE__": view_denoise,
+            "__SEED_FRONT__": base_seed,
+            "__SEED_LEFT__": base_seed,
+            "__SEED_BACK__": base_seed,
+            "__SEED_RIGHT__": base_seed,
+            "__OUTPUT_FRONT__": f"meshforge/{run_id}/front",
+            "__OUTPUT_LEFT__": f"meshforge/{run_id}/left",
+            "__OUTPUT_BACK__": f"meshforge/{run_id}/back",
+            "__OUTPUT_RIGHT__": f"meshforge/{run_id}/right",
+        }
+        for label in VIEW_LABELS:
+            replacements[f"__PROMPT_{label.upper()}__"] = self._build_guided_view_prompt(subject, label)
+        logger.info(
+            "guided-edit seed=%s edit_denoise=%.2f subject=%s",
+            base_seed,
+            edit_denoise,
+            subject[:120],
+        )
+        return self._render_workflow(workflow, replacements)
+
+    def _build_guided_view_prompt(self, prompt: str, label: str) -> str:
+        base = self._build_view_prompt(prompt, label)
+        return (
+            f"{base}. "
+            "Preserve the same overall silhouette, proportions, and identity as the reference image; "
+            "apply only the requested change. "
+            "Keep a single centered clay object on a plain neutral gray studio backdrop — "
+            "no landscape, no sky, no trees, no fence, no 2D cartoon scene."
+        )
+
     def _generate_zero123_orbits(
         self,
         client: httpx.Client,
@@ -296,30 +588,61 @@ class ComfyUiClient:
 
     def _submit_workflow(self, client: httpx.Client, workflow: dict[str, Any]) -> dict[str, Any]:
         client_id = f"meshforge-{uuid.uuid4().hex[:12]}"
+        project_id = getattr(self._scheduler, "_active_project", None)
+        prog.raise_if_cancelled(project_id)
         response = client.post(
             f"{self.base_url}/prompt",
             json={"prompt": workflow, "client_id": client_id},
         )
         response.raise_for_status()
         prompt_id = response.json()["prompt_id"]
-        return self._wait_for_history(client, prompt_id)
+        return self._wait_for_history(client, prompt_id, project_id=project_id)
 
-    def _wait_for_history(self, client: httpx.Client, prompt_id: str) -> dict[str, Any]:
+    def interrupt(self) -> None:
+        """Ask ComfyUI to stop the currently executing prompt."""
+        try:
+            with httpx.Client(timeout=10.0) as client:
+                client.post(f"{self.base_url}/interrupt")
+        except Exception as exc:
+            logger.warning("ComfyUI interrupt failed: %s", exc)
+
+    def _wait_for_history(
+        self,
+        client: httpx.Client,
+        prompt_id: str,
+        *,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
         deadline = time.time() + 1800
         while time.time() < deadline:
+            if prog.is_cancelled(project_id):
+                try:
+                    client.post(f"{self.base_url}/interrupt")
+                except Exception:
+                    pass
+                try:
+                    client.post(f"{self.base_url}/queue", json={"delete": [prompt_id]})
+                except Exception:
+                    pass
+                if project_id:
+                    prog.finish(project_id, ok=False, error="Остановлено")
+                raise prog.OperationCancelled("Остановлено пользователем")
             response = client.get(f"{self.base_url}/history/{prompt_id}")
             response.raise_for_status()
             payload = response.json()
             if payload and prompt_id in payload:
+                prog.raise_if_cancelled(project_id)
                 return payload[prompt_id]
-            time.sleep(1.5)
+            time.sleep(1.0)
         raise TimeoutError("Timed out waiting for ComfyUI workflow output")
 
     def _load_workflow_pack(self) -> WorkflowPack:
         config_path = self.config.comfyui_workflow_path
         workflows_dir = Path(__file__).resolve().parent.parent / "workflows"
         default_text_to_front = workflows_dir / "text_to_front.json"
+        default_views_from_front = workflows_dir / "views_from_front.json"
         default_zero123 = workflows_dir / "zero123_orbits.json"
+        default_guided = workflows_dir / "guided_edit_multiview.json"
         orbit_defaults = {"left": "22", "back": "23", "right": "24"}
         if config_path.is_file():
             data = json.loads(config_path.read_text(encoding="utf-8"))
@@ -328,7 +651,9 @@ class ComfyUiClient:
                 stages = data.get("stages") or {}
                 outputs = data.get("outputs") or {}
                 front_path = stages.get("text_to_front") or "text_to_front.json"
+                views_from_front_path = stages.get("views_from_front") or "views_from_front.json"
                 zero_path = stages.get("zero123_orbits") or "zero123_orbits.json"
+                guided_path = stages.get("guided_edit_multiview") or "guided_edit_multiview.json"
                 orbit_outputs = {
                     str(k): str(v)
                     for k, v in (outputs.get("orbits") or orbit_defaults).items()
@@ -336,7 +661,9 @@ class ComfyUiClient:
                 return WorkflowPack(
                     text_to_front=(base_dir / front_path).resolve(),
                     text_to_multiview=(base_dir / stages["text_to_multiview"]).resolve(),
+                    views_from_front=(base_dir / views_from_front_path).resolve(),
                     zero123_orbits=(base_dir / zero_path).resolve(),
+                    guided_edit_multiview=(base_dir / guided_path).resolve(),
                     multiview_to_mesh=(base_dir / stages["multiview_to_mesh"]).resolve(),
                     image_to_mesh=(base_dir / stages.get("image_to_mesh", "image_to_mesh.json")).resolve(),
                     front_output=str(outputs.get("front") or "7"),
@@ -348,7 +675,9 @@ class ComfyUiClient:
         return WorkflowPack(
             text_to_front=default_text_to_front,
             text_to_multiview=self.config.comfyui_text_to_multiview_workflow_path,
+            views_from_front=default_views_from_front,
             zero123_orbits=default_zero123,
+            guided_edit_multiview=default_guided,
             multiview_to_mesh=self.config.comfyui_multiview_to_mesh_workflow_path,
             image_to_mesh=self.config.comfyui_image_to_mesh_workflow_path,
             front_output="7",
@@ -378,6 +707,51 @@ class ComfyUiClient:
             "__OUTPUT_PREFIX__": f"meshforge/{run_id}/front",
         }
         logger.info("text→front seed=%s subject=%s", seed, subject[:120])
+        return self._render_workflow(workflow, replacements)
+
+    def _load_views_from_front_workflow(
+        self,
+        workflow_path: Path,
+        *,
+        prompt: str,
+        uploaded_front: str,
+        run_id: str,
+    ) -> dict[str, Any]:
+        workflow = self._read_workflow(workflow_path)
+        base_seed = random.randint(1, 2**31 - 1)
+        c = self.config.comfyui
+        ckpt = (c.checkpoint or "").lower()
+        view_denoise = float(c.view_denoise_turbo if "turbo" in ckpt else c.view_denoise)
+        negative = self._build_view_negative(c.negative_prompt)
+        subject = self._normalize_subject_prompt(prompt)
+        replacements: dict[str, Any] = {
+            "__CHECKPOINT__": c.checkpoint,
+            "__FRONT_IMAGE__": uploaded_front,
+            "__NEGATIVE_PROMPT__": negative,
+            "__WIDTH__": c.width,
+            "__HEIGHT__": c.height,
+            "__STEPS__": c.steps,
+            "__CFG__": c.cfg,
+            "__SAMPLER__": c.view_sampler or "euler",
+            "__SCHEDULER__": c.view_scheduler or "sgm_uniform",
+            "__VIEW_DENOISE__": view_denoise,
+            "__SEED_LEFT__": base_seed,
+            "__SEED_BACK__": base_seed + 1,
+            "__SEED_RIGHT__": base_seed + 2,
+            "__OUTPUT_FRONT__": f"meshforge/{run_id}/front",
+            "__OUTPUT_LEFT__": f"meshforge/{run_id}/left",
+            "__OUTPUT_BACK__": f"meshforge/{run_id}/back",
+            "__OUTPUT_RIGHT__": f"meshforge/{run_id}/right",
+            "__PROMPT_LEFT__": self._build_view_prompt(subject, "left"),
+            "__PROMPT_BACK__": self._build_view_prompt(subject, "back"),
+            "__PROMPT_RIGHT__": self._build_view_prompt(subject, "right"),
+        }
+        logger.info(
+            "views←front seed=%s denoise=%.2f subject=%s",
+            base_seed,
+            view_denoise,
+            subject[:120],
+        )
         return self._render_workflow(workflow, replacements)
 
     def _load_text_to_multiview_workflow(self, workflow_path: Path, *, prompt: str, count: int, run_id: str) -> dict[str, Any]:
@@ -545,13 +919,23 @@ class ComfyUiClient:
                 text = text[len(prefix):].strip()
         return text
 
+    def _view_style(self) -> str:
+        style = (self.config.comfyui.view_style or "clay").strip().lower()
+        return style if style in {"clay", "color"} else "clay"
+
     def _build_view_negative(self, base_negative: str) -> str:
         extras = (
-            "photorealistic fur, realistic photo, different animal, "
-            "inconsistent character, collage, split screen, multiple cats, extra limbs, "
-            "scene background, furniture, hands, people, text, watermark, frame, cropped, "
-            "side profile, three-quarter view, looking sideways, morphing identity"
+            "photorealistic photo, busy scene, collage, split screen, multiple subjects, "
+            "inconsistent identity across views, morphing shape, disconnected floating parts, "
+            "hands, people, text, watermark, logo, frame, cropped, cut off, "
+            "landscape background, sky, grass, trees, fence, scenery, 2d illustration background, "
+            "side profile when front is required, three-quarter view when front is required"
         )
+        if self._view_style() == "clay":
+            extras = (
+                f"{extras}, colorful plastic, painted texture, multicolored patterns, "
+                "glossy materials, wood grain, fabric, metallic reflections"
+            )
         base = (base_negative or "").strip().rstrip(",")
         return f"{base}, {extras}" if base else extras
 
@@ -559,30 +943,37 @@ class ComfyUiClient:
         view_text = {
             "front": (
                 "STRICT orthographic FRONT elevation, camera on the turntable axis, "
-                "both ears and both eyes equally visible, nose pointing straight at camera, "
+                "object facing the camera squarely, "
                 "NOT a side profile, NOT three-quarter view"
             ),
             "left": (
-                "SAME identical figurine, only camera moved: orthographic LEFT profile, "
-                "90 degree yaw turntable orbit from front, subject faces right of frame, "
-                "keep the same pose, proportions, and expression"
+                "SAME identical object, only camera moved: orthographic LEFT profile, "
+                "90 degree yaw turntable orbit from front, "
+                "keep the same proportions, details, and silhouette"
             ),
             "back": (
-                "SAME identical figurine, only camera moved: orthographic BACK view, "
+                "SAME identical object, only camera moved: orthographic BACK view, "
                 "180 degree yaw turntable orbit from front, "
-                "keep the same pose, proportions, and expression"
+                "keep the same proportions, details, and silhouette"
             ),
             "right": (
-                "SAME identical figurine, only camera moved: orthographic RIGHT profile, "
-                "270 degree yaw turntable orbit from front, subject faces left of frame, "
-                "keep the same pose, proportions, and expression"
+                "SAME identical object, only camera moved: orthographic RIGHT profile, "
+                "270 degree yaw turntable orbit from front, "
+                "keep the same proportions, details, and silhouette"
             ),
         }[label]
         subject = prompt.strip()
+        if self._view_style() == "color":
+            return (
+                "product photo of ONE colorful object matching the described colors and materials, "
+                "single centered subject, clean neutral gray studio backdrop, soft even lighting, "
+                "clear silhouette for 3D reconstruction, keep colors consistent across views, "
+                f"{view_text}. Subject: {subject}"
+            )
         return (
-            "product photo of ONE matte white clay 3D-printable tabletop figurine, "
-            "smooth sealed surface, no fur strands, no photoreal materials, "
-            "single centered object, neutral gray studio backdrop, soft even lighting, "
+            "product photo of ONE matte white clay 3D-printable object, "
+            "smooth sealed surface, no photoreal materials, "
+            "single centered subject, neutral gray studio backdrop, soft even lighting, "
             "clean silhouette for 3D reconstruction, "
             f"{view_text}. Subject: {subject}"
         )

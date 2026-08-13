@@ -7,6 +7,7 @@ from typing import Any
 
 class PipelineStepType(StrEnum):
     TEXT_TO_MESH = "text_to_mesh"
+    GUIDED_EDIT = "guided_edit"
     GENERATE_VIEWS = "generate_views"
     RECONSTRUCT_MESH = "reconstruct_mesh"
     FINALIZE_RECONSTRUCTION = "finalize_reconstruction"
