@@ -86,9 +86,22 @@ class OperationResult(BaseModel):
     pipeline: PipelineStateInfo | None = None
 
 
+class GpuQueueEntry(BaseModel):
+    kind: str
+    label: str
+    project_id: str | None = None
+    position: int = 0
+
+
+class GpuQueueInfo(BaseModel):
+    active: GpuQueueEntry | None = None
+    waiting: list[GpuQueueEntry] = Field(default_factory=list)
+
+
 class SystemStatus(BaseModel):
     services: dict[str, bool]
     status_text: str
+    gpu: GpuQueueInfo = Field(default_factory=GpuQueueInfo)
 
 
 class LLMSettings(BaseModel):

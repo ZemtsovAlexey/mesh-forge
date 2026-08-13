@@ -316,6 +316,19 @@ async function loadStatus() {
       span.textContent = name;
       pills.appendChild(span);
     }
+    const gpu = data.gpu || {};
+    const gpuPill = document.createElement("span");
+    if (gpu.active) {
+      const waiting = Array.isArray(gpu.waiting) ? gpu.waiting.length : 0;
+      gpuPill.className = "pill ok";
+      gpuPill.textContent = waiting
+        ? `gpu: ${gpu.active.label} +${waiting}`
+        : `gpu: ${gpu.active.label}`;
+    } else {
+      gpuPill.className = "pill";
+      gpuPill.textContent = "gpu: idle";
+    }
+    pills.appendChild(gpuPill);
   } catch (e) {
     console.warn("status", e);
   }

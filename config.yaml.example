@@ -12,6 +12,8 @@ server:
   port: 7860
 gpu:
   vram_gb: 0
+  # true = unload LM Studio / ComfyUI when the GPU slot switches kind (needed on 8GB).
+  # false = FIFO queue only; both may stay loaded if VRAM allows.
   sequential_models: true
 comfyui:
   enabled: true

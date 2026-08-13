@@ -70,7 +70,7 @@ class ComfyUiClient:
         mode = self._view_consistency()
 
         try:
-            with self._scheduler.acquire("ComfyUI views", project_id=project_id):
+            with self._scheduler.acquire("ComfyUI views", kind="comfy", project_id=project_id):
                 with httpx.Client(timeout=120.0) as client:
                     if mode == "img2img":
                         workflow = self._load_text_to_multiview_workflow(
@@ -121,7 +121,7 @@ class ComfyUiClient:
         mode = self._view_consistency()
 
         try:
-            with self._scheduler.acquire("ComfyUI text→mesh", project_id=project_id):
+            with self._scheduler.acquire("ComfyUI text→mesh", kind="comfy", project_id=project_id):
                 with httpx.Client(timeout=180.0) as client:
                     prog.update(project_id, 14, "concept")
                     if mode == "img2img":
@@ -206,7 +206,7 @@ class ComfyUiClient:
         pack = self._load_workflow_pack()
         run_id = uuid.uuid4().hex[:8]
         try:
-            with self._scheduler.acquire("ComfyUI front", project_id=project_id):
+            with self._scheduler.acquire("ComfyUI front", kind="comfy", project_id=project_id):
                 with httpx.Client(timeout=180.0) as client:
                     prog.update(project_id, 20, "front")
                     front_wf = self._load_text_to_front_workflow(
@@ -250,7 +250,7 @@ class ComfyUiClient:
         mode = self._view_consistency()
 
         try:
-            with self._scheduler.acquire("ComfyUI views-from-front", project_id=project_id):
+            with self._scheduler.acquire("ComfyUI views-from-front", kind="comfy", project_id=project_id):
                 with httpx.Client(timeout=180.0) as client:
                     prog.update(project_id, 40, "views")
                     views_dir = work_dir / "views"
@@ -334,7 +334,7 @@ class ComfyUiClient:
         mode = self._view_consistency()
 
         try:
-            with self._scheduler.acquire("ComfyUI guided edit", project_id=project_id):
+            with self._scheduler.acquire("ComfyUI guided edit", kind="comfy", project_id=project_id):
                 with httpx.Client(timeout=180.0) as client:
                     prog.update(project_id, 14, "guided")
                     uploaded_anchor = self._upload_input_image(
@@ -545,7 +545,7 @@ class ComfyUiClient:
         assigned = self._assign_view_paths(images)
 
         try:
-            with self._scheduler.acquire("ComfyUI images→mesh", project_id=project_id):
+            with self._scheduler.acquire("ComfyUI images→mesh", kind="comfy", project_id=project_id):
                 with httpx.Client(timeout=120.0) as client:
                     prog.update(project_id, 20, "mesh")
                     uploaded = {
@@ -588,7 +588,7 @@ class ComfyUiClient:
 
     def _submit_workflow(self, client: httpx.Client, workflow: dict[str, Any]) -> dict[str, Any]:
         client_id = f"meshforge-{uuid.uuid4().hex[:12]}"
-        project_id = getattr(self._scheduler, "_active_project", None)
+        project_id = self._scheduler.active_project_id
         prog.raise_if_cancelled(project_id)
         response = client.post(
             f"{self.base_url}/prompt",

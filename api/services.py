@@ -22,11 +22,14 @@ from mesh_forge.mesh_qc import analyze_mesh, is_print_ready
 from mesh_forge.orchestrator import Orchestrator
 from mesh_forge import progress as prog
 from mesh_forge.adapters import LMStudioClient
+from mesh_forge.runtime import get_gpu_scheduler
 
 from api.schemas import (
     ArtifactInfo,
     ExportInfo,
     GenerationSettings,
+    GpuQueueEntry,
+    GpuQueueInfo,
     LLMModelsResponse,
     LLMSettings,
     OperationResult,
@@ -179,7 +182,29 @@ def export_info(manifest: ProjectManifest) -> ExportInfo:
 
 def system_status(orch: Orchestrator) -> SystemStatus:
     services = orch.system_status()
-    return SystemStatus(services=services, status_text=orch.status_text())
+    snap = get_gpu_scheduler().snapshot()
+    active = None
+    if snap.active is not None:
+        active = GpuQueueEntry(
+            kind=snap.active.kind,
+            label=snap.active.label,
+            project_id=snap.active.project_id,
+            position=snap.active.position,
+        )
+    waiting = [
+        GpuQueueEntry(
+            kind=item.kind,
+            label=item.label,
+            project_id=item.project_id,
+            position=item.position,
+        )
+        for item in snap.waiting
+    ]
+    return SystemStatus(
+        services=services,
+        status_text=orch.status_text(),
+        gpu=GpuQueueInfo(active=active, waiting=waiting),
+    )
 
 
 def get_llm_settings() -> LLMSettings:

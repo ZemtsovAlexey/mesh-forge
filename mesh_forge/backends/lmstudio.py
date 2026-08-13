@@ -51,12 +51,18 @@ class LMStudioClient:
         )
 
     def chat(self, model: str, messages: list[dict[str, Any]], temperature: float = 0.2) -> str:
-        response = self.client.chat.completions.create(
-            model=model,
-            messages=messages,
-            temperature=temperature,
-        )
-        return response.choices[0].message.content or ""
+        from mesh_forge import progress as prog
+        from mesh_forge.runtime import get_gpu_scheduler
+
+        project_id = prog.current_project_id()
+        with get_gpu_scheduler().acquire("LM Studio", kind="llm", project_id=project_id):
+            prog.raise_if_cancelled(project_id)
+            response = self.client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+            )
+            return response.choices[0].message.content or ""
 
     def plan_edit(self, instruction: str, mesh_stats: dict[str, Any] | None = None) -> dict[str, Any]:
         user_content = f"Instruction: {instruction}\n"

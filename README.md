@@ -8,7 +8,7 @@
 - text-to-3D через ComfyUI end-to-end (`text → named views → mesh`)
 - image-to-3D через ComfyUI (`1 фото` или `до 4 ракурсов`)
 - cleanup и редактирование существующего mesh
-- очередь GPU: тяжёлые задачи выполняются последовательно на локальной машине
+- очередь GPU: один слот на LM Studio и ComfyUI; чат ждёт генерацию и наоборот. При `gpu.sequential_models: true` (по умолчанию) модели выгружаются при смене потребителя — нужно на 8GB VRAM. Позиция в очереди видна в прогрессе и в статус-пилюле `gpu`.
 
 ## Быстрый старт
 
@@ -83,6 +83,7 @@ Checkpoint’ы:
 
 - `paths.projects`
 - `gpu.vram_gb` (NVIDIA определяется автоматически, для iGPU можно указать вручную)
+- `gpu.sequential_models` (`true` = выгружать LLM/ComfyUI при смене слота; `false` = только FIFO, без unload)
 - `llm.*`
 - `comfyui.install_dir`
 - `comfyui.*` checkpoints / workflow paths

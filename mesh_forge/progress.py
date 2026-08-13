@@ -1,9 +1,19 @@
 from __future__ import annotations
 
+import contextvars
 import threading
 import time
 from dataclasses import asdict, dataclass
 from typing import Any
+
+_current_project_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "meshforge_gpu_project_id",
+    default=None,
+)
+
+
+def current_project_id() -> str | None:
+    return _current_project_id.get()
 
 
 class OperationCancelled(Exception):
@@ -33,6 +43,7 @@ _jobs: dict[str, ProgressState] = {}
 
 
 def start(project_id: str, operation: str, stage: str = "Старт…") -> None:
+    _current_project_id.set(project_id)
     now = time.time()
     with _lock:
         prev = _jobs.get(project_id)
@@ -66,12 +77,16 @@ def finish(project_id: str, *, ok: bool = True, error: str | None = None) -> Non
     with _lock:
         job = _jobs.get(project_id)
         if not job:
+            if _current_project_id.get() == project_id:
+                _current_project_id.set(None)
             return
         job.active = False
         job.percent = 100.0 if ok else job.percent
         job.stage = "Готово" if ok else (error or "Ошибка")
         job.error = None if ok else (error or "Ошибка")
         job.updated_at = time.time()
+    if _current_project_id.get() == project_id:
+        _current_project_id.set(None)
 
 
 def request_cancel(project_id: str) -> bool:

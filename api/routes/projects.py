@@ -194,12 +194,17 @@ def post_project_cancel(project_id: str) -> dict:
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
     active = prog.request_cancel(project_id)
-    try:
-        from mesh_forge.adapters import ComfyUiClient
+    from mesh_forge.runtime import get_gpu_scheduler
 
-        ComfyUiClient().interrupt()
-    except Exception:
-        pass
+    scheduler = get_gpu_scheduler()
+    scheduler.wake()
+    if scheduler.holds(project_id, kind="comfy"):
+        try:
+            from mesh_forge.adapters import ComfyUiClient
+
+            ComfyUiClient().interrupt()
+        except Exception:
+            pass
     return {"ok": True, "was_active": active, "message": "Остановка запрошена"}
 
 
