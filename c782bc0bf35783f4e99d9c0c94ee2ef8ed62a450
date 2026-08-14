@@ -1,0 +1,38 @@
+mesh_forge/application/chat_agent.py
+  146e5488bd6765bb 78-81,759,779-780,787,791
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "git-ai-lite-1.0.0",
+  "base_commit_sha": "3fc93f66854d87d17cc5896cbecdbbe10063e4bc",
+  "prompts": {
+    "a7522fa4c3ec8181": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "eee4ddec-4844-4826-95ae-adf252b21480",
+        "model": "composer-2.5"
+      },
+      "human_author": "╨Ч╨╡╨╝╤Ж╨╛╨▓ ╨Р╨╗╨╡╨║╤Б╨╡╨╣ <zemtsov@moedelo.org>",
+      "messages": [],
+      "total_additions": 1004,
+      "total_deletions": 968,
+      "accepted_lines": 0,
+      "accepted_deletions": 46,
+      "overridden_lines": 1004
+    },
+    "146e5488bd6765bb": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "dc01b4f9-4cfa-4bfe-b7c5-d92019a5dc12",
+        "model": "composer-2.5"
+      },
+      "human_author": "╨Ч╨╡╨╝╤Ж╨╛╨▓ ╨Р╨╗╨╡╨║╤Б╨╡╨╣ <zemtsov@moedelo.org>",
+      "messages": [],
+      "total_additions": 207,
+      "total_deletions": 454,
+      "accepted_lines": 9,
+      "accepted_deletions": 158,
+      "overridden_lines": 198
+    }
+  }
+}
