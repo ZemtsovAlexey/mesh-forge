@@ -75,10 +75,10 @@ Tools:
 Rules:
 - Never show English prompts, translations, or draft_prompt_en in assistant_message.
 - assistant_message is only short user-language talk (questions / status). When starting front, keep it empty or one short line like «Генерирую…» — the front result message will appear separately.
-- No "Generate/Next/Redo" buttons — YOU call run_*/continue/redo tools.
-- If subject is clear for a new object: set_draft_prompt ready=true (starts front). Do not also call run_front or look in that same turn.
-- If user says дальше/ок/продолжай → continue_pipeline.
-- If user says переделай / сделай иначе → redo_step (optionally with new brief).
+- YOU decide every action via tool_calls from context + chat history. No shortcuts — read pipeline.can_continue / can_redo, visuals, refs, and the latest user message.
+- New create: set_draft_prompt ready=true (starts front) when subject is clear. Do not also call run_front or look in that same turn.
+- pipeline.can_continue + user wants next step → continue_pipeline. User asks to fix/redo current gate → redo_step (usually front). User attached photos (visuals.new_photos) → run_photo_preview.
+- User message has ref_ids or asks to apply/revise a cited message/notebook → apply_message or apply_notebook, then run if ready.
 - Results appear as separate chat messages with images/mesh preview; never overwrite history.
 - After look, treat the observation as ground truth. It is saved on those images as message.look in history — reuse it. Call look again only if the latest result has no look (regenerated on a previous turn) or the user asks about a new visual detail.
 - Set done=false after look so you can act on it.
@@ -128,52 +128,6 @@ def _strip_en_draft_leak(message: str, draft_en: str) -> str:
             return "Генерирую…"
         return first
     return msg
-
-
-def _wants_continue(text: str) -> bool:
-    lowered = (text or "").lower().strip()
-    if lowered in {"ок", "окей", "ok", "okay", "да", "yes", "хорошо", "ага", "угу", "next", "go"}:
-        return True
-    return any(
-        k in lowered
-        for k in (
-            "дальше",
-            "далее",
-            "продолж",
-            "собери mesh",
-            "сделай mesh",
-            "в mesh",
-            "проекц",
-            "continue",
-            "go on",
-            "proceed",
-        )
-    )
-
-
-def _wants_redo(text: str) -> bool:
-    lowered = (text or "").lower()
-    return any(
-        k in lowered
-        for k in ("переделай", "перегенер", "заново front", "redo", "ещё раз", "еще раз")
-    )
-
-
-def _wants_generate(text: str) -> bool:
-    lowered = (text or "").lower().strip()
-    return any(
-        k in lowered
-        for k in (
-            "генерир",
-            "сгенерир",
-            "запускай",
-            "запусти",
-            "поехали",
-            "generate",
-            "run it",
-            "start generation",
-        )
-    )
 
 
 class ChatAgentService:
@@ -262,28 +216,6 @@ class ChatAgentService:
             self._attach_upload_images(manifest, state)
             self.chat.save(manifest, state)
 
-        # Photos without a mesh → start preview (no confirm button).
-        if has_images and not has_mesh:
-            obs = self._tool_run_photo_preview(manifest, state)
-            if not self._results_posted:
-                state.assistant_message = obs
-                state.messages.append(ChatMessage(id=_new_msg_id(), role="assistant", content=obs))
-            return self._finalize(manifest, state)
-
-        forced = self._maybe_force_apply(manifest, state, text=text, ref_ids=ref_ids)
-        if forced:
-            # After apply-as-main, generate if create draft is ready
-            if state.ready and state.intent == "create" and state.draft_prompt_en:
-                self.chat.save(manifest, state)
-                self._tool_run_front(manifest, state)
-            elif state.ready and state.intent in {"geometry_edit", "guided_edit", "semantic_edit"}:
-                self.chat.save(manifest, state)
-                self._tool_run_pending_edit(manifest, state)
-            return self._finalize(manifest, state)
-
-        if self._maybe_force_pipeline(manifest, state, text=text):
-            return self._finalize(manifest, state)
-
         tool_trace: list[dict[str, Any]] = []
         for _round in range(MAX_TOOL_ROUNDS):
             prog.raise_if_cancelled(manifest.id)
@@ -352,13 +284,6 @@ class ChatAgentService:
                 state.draft_prompt_en,
             )
             state.status = "ready" if state.ready else ("clarifying" if state.questions else state.status or "idle")
-            # If we only prepared an internal draft and are about to leave ready without
-            # having run front (shouldn't happen often), don't spam translation text.
-            if state.ready and state.intent == "create" and state.draft_prompt_en:
-                # Auto-run front instead of announcing the EN prompt.
-                self.chat.save(manifest, state)
-                self._tool_run_front(manifest, state)
-                return self._finalize(manifest, state)
             state.messages.append(
                 ChatMessage(id=_new_msg_id(), role="assistant", content=state.assistant_message)
             )
@@ -431,85 +356,6 @@ class ChatAgentService:
 
         data["pipeline"] = pipeline_payload(manifest)
         return enrich_chat_payload(manifest, data)
-
-    def _maybe_force_pipeline(self, manifest: ProjectManifest, state: ChatState, *, text: str) -> bool:
-        pipe = load_pipeline(manifest).to_dict()
-        if _wants_continue(text) and pipe.get("can_continue"):
-            self.chat.save(manifest, state)
-            self._tool_continue(manifest, state)
-            return True
-        if _wants_redo(text) and pipe.get("can_redo"):
-            step = "views" if pipe.get("step") == "views" else "front"
-            if pipe.get("pipeline") == "photo_gated":
-                step = "front"
-            brief = None
-            # If user also gave a correction, use as new brief
-            if len((text or "").split()) > 2 and state.draft_prompt_en:
-                brief = None
-            self.chat.save(manifest, state)
-            self._tool_redo(manifest, state, step=step, brief_en=brief)
-            return True
-        if (
-            _wants_generate(text)
-            and state.draft_prompt_en
-            and state.intent == "create"
-            and pipe.get("step") in {"", "idle", "done", None}
-        ):
-            self.chat.save(manifest, state)
-            self._tool_run_front(manifest, state)
-            return True
-        if _wants_generate(text) and state.ready and state.intent in {
-            "geometry_edit",
-            "guided_edit",
-            "semantic_edit",
-        }:
-            self.chat.save(manifest, state)
-            self._tool_run_pending_edit(manifest, state)
-            return True
-        return False
-
-    def _maybe_force_apply(
-        self,
-        manifest: ProjectManifest,
-        state: ChatState,
-        *,
-        text: str,
-        ref_ids: list[str],
-    ) -> bool:
-        if not ref_ids:
-            return False
-        lowered = (text or "").lower()
-        wants_main = any(k in lowered for k in ("основн", "примени", "main", "apply"))
-        wants_revise = any(k in lowered for k in ("передел", "revise", "на основан", "на основании"))
-        if not wants_main and not wants_revise:
-            return False
-        mode = "revise" if wants_revise else "main"
-        rid = ref_ids[0]
-        msg = next((m for m in state.messages if m.id == rid), None)
-        if msg:
-            source = msg.content or ""
-            self._apply_source(manifest, state, source, mode=mode, latest_text=text, label=f"msg:{rid}")
-        else:
-            entry = next((e for e in load_notebook(manifest) if e.id == rid), None)
-            if not entry:
-                return False
-            source = (entry.brief_en or entry.user_prompt or entry.summary or entry.title).strip()
-            self._apply_source(manifest, state, source, mode=mode, latest_text=text, label=f"nb:{rid}")
-        draft = state.draft_prompt_en or state.edit_brief_en
-        # Do not echo EN draft into chat — front/edit will translate & run.
-        state.assistant_message = (
-            "Применил как основу — запускаю."
-            if mode == "main"
-            else "Пересобрал на основе ссылки — запускаю."
-        )
-        state.status = "ready" if state.ready else state.status
-        # Skip chat bubble if we immediately run a heavy tool (caller may generate).
-        if not (state.ready and state.intent in {"create", "geometry_edit", "guided_edit", "semantic_edit"}):
-            state.messages.append(
-                ChatMessage(id=_new_msg_id(), role="assistant", content=state.assistant_message)
-            )
-        _ = draft
-        return True
 
     def _ensure_message_ids(self, state: ChatState) -> None:
         for msg in state.messages:
@@ -910,6 +756,7 @@ class ChatAgentService:
                     item["look"] = looks[0] if len(looks) == 1 else looks
             history.append(item)
 
+        latest_user = next((m for m in reversed(state.messages) if m.role == "user"), None)
         context = {
             "has_mesh": has_mesh,
             "mode": state.mode,
@@ -929,15 +776,19 @@ class ChatAgentService:
             "tool_results": tool_trace[-6:],
             "visuals": self._visual_inventory(manifest, state),
         }
+        if latest_user and latest_user.ref_ids:
+            context["refs"] = self._resolve_refs(state, manifest, latest_user.ref_ids)
         user_blob = (
             "Context JSON:\n"
             + json.dumps(context, ensure_ascii=False)
             + "\n\nChat history:\n"
             + json.dumps(history, ensure_ascii=False)
             + "\n\nDecide next assistant_message and optional tool_calls."
+            + " Use pipeline.can_continue / can_redo and visuals.new_photos — no keyword shortcuts."
             + " Call look only when the user asks about appearance or attached photos."
             + " Do not look at a result you just generated; wait for the next user message."
             + " message.look is a cached observation; visuals.looked says whether the latest files already have one."
+            + " If context.refs is set, the user cited prior messages/notebook — use apply_message or apply_notebook."
         )
 
         try:
