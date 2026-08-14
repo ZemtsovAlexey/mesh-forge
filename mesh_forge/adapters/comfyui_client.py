@@ -4,7 +4,6 @@ import copy
 import json
 import logging
 import random
-import re
 import time
 import uuid
 from dataclasses import dataclass
@@ -479,14 +478,7 @@ class ComfyUiClient:
         return self._render_workflow(workflow, replacements)
 
     def _build_guided_view_prompt(self, prompt: str, label: str) -> str:
-        base = self._build_view_prompt(prompt, label)
-        return (
-            f"{base}. "
-            "Preserve the same overall silhouette, proportions, and identity as the reference image; "
-            "apply only the requested change. "
-            "Keep a single centered clay object on a plain neutral gray studio backdrop — "
-            "no landscape, no sky, no trees, no fence, no 2D cartoon scene."
-        )
+        return self._build_view_prompt(prompt, label)
 
     def _generate_zero123_orbits(
         self,
@@ -913,20 +905,9 @@ class ComfyUiClient:
         return workflow
 
     def _normalize_subject_prompt(self, prompt: str) -> str:
-        text = (prompt or "").strip()
-        # Strip accidental "front view:" prefixes from chat drafts.
-        for prefix in ("front:", "left:", "back:", "right:", "view:"):
-            if text.lower().startswith(prefix):
-                text = text[len(prefix) :].strip()
-        # "for 3D printing" is output intent, not part of the scene — SD turns it into
-        # workshops, filament spools, tables, sewing kits.
-        text = re.sub(
-            r"\b(?:for\s+)?(?:3[dD][\s-]?print(?:ing|able)?(?:\s+\w+){0,2})\b",
-            " ",
-            text,
-        )
-        text = re.sub(r"\bдля\s+(?:3d[\s-]?)?печат\w*\b", " ", text, flags=re.IGNORECASE)
-        return re.sub(r"\s{2,}", " ", text).strip(" ,;.")
+        from mesh_forge.backends.lmstudio import _trim_subject_prompt
+
+        return _trim_subject_prompt(prompt)
 
     def _view_style(self) -> str:
         style = (self.config.comfyui.view_style or "clay").strip().lower()
@@ -950,43 +931,9 @@ class ComfyUiClient:
         return f"{base}, {extras}" if base else extras
 
     def _build_view_prompt(self, prompt: str, label: str) -> str:
-        view_text = {
-            "front": (
-                "STRICT orthographic FRONT elevation, camera on the turntable axis, "
-                "object facing the camera squarely, "
-                "NOT a side profile, NOT three-quarter view"
-            ),
-            "left": (
-                "SAME identical object, only camera moved: orthographic LEFT profile, "
-                "90 degree yaw turntable orbit from front, "
-                "keep the same proportions, details, and silhouette"
-            ),
-            "back": (
-                "SAME identical object, only camera moved: orthographic BACK view, "
-                "180 degree yaw turntable orbit from front, "
-                "keep the same proportions, details, and silhouette"
-            ),
-            "right": (
-                "SAME identical object, only camera moved: orthographic RIGHT profile, "
-                "270 degree yaw turntable orbit from front, "
-                "keep the same proportions, details, and silhouette"
-            ),
-        }[label]
-        subject = prompt.strip()
-        if self._view_style() == "color":
-            return (
-                "product photo of ONE colorful object matching the described colors and materials, "
-                "single centered subject, clean neutral gray studio backdrop, soft even lighting, "
-                "clear silhouette for 3D reconstruction, keep colors consistent across views, "
-                f"{view_text}. Subject: {subject}"
-            )
-        return (
-            "product photo of ONE matte white clay 3D-printable object, "
-            "smooth sealed surface, no photoreal materials, "
-            "single centered subject, neutral gray studio backdrop, soft even lighting, "
-            "clean silhouette for 3D reconstruction, "
-            f"{view_text}. Subject: {subject}"
-        )
+        # Comfy gets the translated user subject only — no clay/studio/camera boilerplate.
+        _ = label
+        return self._normalize_subject_prompt(prompt)
 
     def _collect_front_image(
         self,

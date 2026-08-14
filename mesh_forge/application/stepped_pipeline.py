@@ -155,10 +155,14 @@ def start_text_front(
 ) -> PipelineRunState:
     from mesh_forge.adapters import LMStudioClient
 
+    from mesh_forge.backends.lmstudio import _looks_english, _trim_subject_prompt
+
     brief = (brief_en or "").strip() or (user_prompt or "").strip()
-    # Safety net: never send non-English subject into ComfyUI front generation.
     try:
-        brief = LMStudioClient().ensure_english_subject(brief)
+        if brief and not _looks_english(brief):
+            brief = LMStudioClient().ensure_english_subject(brief)
+        else:
+            brief = _trim_subject_prompt(brief)
     except Exception as exc:
         logger.warning("ensure_english_subject failed: %s", exc)
         if not brief.isascii():

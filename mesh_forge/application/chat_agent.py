@@ -56,8 +56,7 @@ Reply with ONLY valid JSON:
 Tools:
 - look {target?: "auto"|"mesh"|"front"|"views"|"photos", question?: str} — inspect visuals with the vision model. Use on a later turn when the user comments on appearance or attached photos. NEVER call look in the same turn as run_front / continue_pipeline / redo_step / run_photo_preview / run_pending_edit.
 - ask_user {questions: [str]} — clarify only
-- set_draft_prompt {prompt_en: str, ready?: bool} — internal EN subject for Comfy; if ready=true starts front.
-  The EN text is NEVER shown to the user — translation is an internal front step.
+- set_draft_prompt {ready?: bool} — literal EN translation of user chat text for Comfy; if ready=true starts front.
 - run_front {} — generate front (translates subject to English inside the pipeline)
 - continue_pipeline {} — next step (views after front, mesh after views/photo)
 - redo_step {step?: "front"|"views", brief_en?: str} — regenerate current gate (new chat message, old kept)
@@ -868,11 +867,12 @@ class ChatAgentService:
                 state.status = "clarifying"
                 return f"questions={len(qs)}"
             if name == "set_draft_prompt":
-                prompt = str(args.get("prompt_en") or "").strip()
+                source = (state.user_prompt or latest_text or str(args.get("prompt_en") or "")).strip()
+                if not source:
+                    return "error: empty subject"
+                prompt = self.llm.ensure_english_subject(source)
                 if not prompt:
-                    return "error: empty prompt_en"
-                if not _looks_english(prompt):
-                    prompt = self.llm.ensure_english_subject(prompt)
+                    return "error: could not translate subject"
                 state.intent = "create"
                 state.mode = "create"
                 state.draft_prompt_en = prompt
@@ -1041,6 +1041,14 @@ class ChatAgentService:
         state.assistant_message = loaded.assistant_message
         state.messages = loaded.messages
 
+    def _patch_chat_after_pipeline(self, manifest: ProjectManifest, **fields: Any) -> ChatState:
+        """Merge pipeline effects into chat.json without clobbering posted results."""
+        state = self.chat.load(manifest)
+        for key, value in fields.items():
+            setattr(state, key, value)
+        self.chat.save(manifest, state)
+        return state
+
     def _tool_run_front(self, manifest: ProjectManifest, state: ChatState) -> str:
         from mesh_forge.application.stepped_pipeline import start_text_front
 
@@ -1049,9 +1057,7 @@ class ChatAgentService:
             if m.role == "user" and (m.content or "").strip():
                 last_user = m.content.strip()
                 break
-        # Prefer the internal EN subject; raw chat often contains purpose words
-        # ("для 3d печати") that SD paints as a scene.
-        source = (state.draft_prompt_en or last_user or state.user_prompt or "").strip()
+        source = (state.user_prompt or last_user or "").strip()
         if not source:
             return "error: empty subject"
         pipe = start_text_front(
@@ -1060,12 +1066,13 @@ class ChatAgentService:
             user_prompt=state.user_prompt or last_user or source,
             solidify_mm=0.0,
         )
-        # Keep translated brief only as internal state (not shown as its own chat turn).
-        if pipe.brief_en:
-            state.draft_prompt_en = pipe.brief_en
         self._results_posted = True
-        state.ready = False
-        state.status = "pipeline"
+        self._patch_chat_after_pipeline(
+            manifest,
+            draft_prompt_en=pipe.brief_en or state.draft_prompt_en,
+            ready=False,
+            status="pipeline",
+        )
         return f"front status={pipe.status} quality_ok={pipe.quality_ok}"
 
     def _tool_continue(self, manifest: ProjectManifest, state: ChatState) -> str:
@@ -1087,13 +1094,19 @@ class ChatAgentService:
     ) -> str:
         from mesh_forge.application.stepped_pipeline import redo_step
 
-        if brief_en:
-            state.draft_prompt_en = brief_en
-            self.chat.save(manifest, state)
+        source = (state.user_prompt or brief_en or "").strip()
+        if source:
+            translated = self.llm.ensure_english_subject(source)
+            if translated:
+                brief_en = translated
         pipe = redo_step(manifest, step=step or "front", brief_en=brief_en)
         self._results_posted = True
-        state.ready = False
-        state.status = "pipeline"
+        self._patch_chat_after_pipeline(
+            manifest,
+            draft_prompt_en=pipe.brief_en or brief_en or state.draft_prompt_en,
+            ready=False,
+            status="pipeline",
+        )
         return f"redid step={pipe.step} status={pipe.status}"
 
     def _tool_run_photo_preview(self, manifest: ProjectManifest, state: ChatState) -> str:
@@ -1151,17 +1164,14 @@ class ChatAgentService:
         else:
             combined = source
         if has_mesh and mode == "revise":
-            brief = self.llm.ensure_english_subject(combined[:400])
+            brief = self.llm.ensure_english_subject(latest_text or combined[:400])
             state.intent = "guided_edit"
             state.mode = "edit"
             state.edit_brief_en = brief
             state.draft_prompt_en = brief
         else:
-            prompt = self.llm.ensure_english_subject(
-                combined.split("\n")[0][:300] if mode == "main" else combined[:400]
-            )
-            if not _looks_english(prompt):
-                prompt = self.chat._fallback_draft_en(combined)
+            source_line = latest_text or combined.split("\n")[0][:300] if mode == "main" else combined[:400]
+            prompt = self.llm.ensure_english_subject(source_line)
             state.intent = "create" if not has_mesh else "semantic_edit"
             state.mode = "create" if not has_mesh else "edit"
             if state.intent == "create":

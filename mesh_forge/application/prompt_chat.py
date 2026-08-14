@@ -241,33 +241,37 @@ class PromptChatService:
         result = self.llm.clarify_or_enhance(history)
         state.intent = str(result.get("intent") or "create")
         state.questions = [str(q).strip() for q in (result.get("questions") or []) if str(q).strip()][:3]
-        state.draft_prompt_en = str(result.get("draft_prompt_en") or "").strip()
+        user_text = state.user_prompt or _last_user_text(state.messages)
         state.edit_brief_en = ""
         state.planned_ops = []
-        state.ready = bool(result.get("ready")) and bool(state.draft_prompt_en)
+        state.ready = bool(result.get("ready"))
 
-        if force_draft and not state.ready:
-            # Break empty clarify loops: synthesize a usable EN draft from user text.
-            state.draft_prompt_en = self._fallback_draft_en(
-                state.user_prompt or _last_user_text(state.messages)
-            )
+        if (force_draft or state.ready) and user_text:
+            state.draft_prompt_en = self.llm.ensure_english_subject(user_text)
             state.questions = []
             state.ready = bool(state.draft_prompt_en)
-            state.assistant_message = (
-                "Ок, собираю промпт из того что уже есть — можно запускать. "
-                "Если нужно иначе, напишите правку после генерации."
-            )
+            if force_draft and not bool(result.get("ready")):
+                state.assistant_message = (
+                    "Ок, собираю промпт из того что уже есть — можно запускать. "
+                    "Если нужно иначе, напишите правку после генерации."
+                )
+            else:
+                state.assistant_message = _format_assistant_with_questions(
+                    str(result.get("assistant_message") or "").strip(),
+                    [],
+                    ready=state.ready,
+                    draft=state.draft_prompt_en,
+                )
         else:
-            if state.draft_prompt_en and not _looks_english(state.draft_prompt_en):
-                state.draft_prompt_en = self.llm.ensure_english_subject(state.draft_prompt_en)
-                state.ready = bool(result.get("ready")) and bool(state.draft_prompt_en)
+            state.draft_prompt_en = ""
+            state.ready = False
             state.assistant_message = _format_assistant_with_questions(
                 str(result.get("assistant_message") or "").strip(),
                 state.questions,
-                ready=state.ready,
-                draft=state.draft_prompt_en,
+                ready=False,
+                draft="",
             )
-            if not state.ready and not state.questions:
+            if not state.questions:
                 state.questions = [
                     "Что именно моделируем? (объект / персонаж / здание…)",
                     "Какой стиль? (мультяшный / реалистичный / clay / lowpoly…)",
@@ -279,11 +283,6 @@ class PromptChatService:
                     ready=False,
                     draft="",
                 )
-
-        # Final guard: never mark ready with a non-English Comfy draft.
-        if state.ready and state.draft_prompt_en and not _looks_english(state.draft_prompt_en):
-            state.draft_prompt_en = self.llm.ensure_english_subject(state.draft_prompt_en)
-            state.ready = bool(state.draft_prompt_en)
 
         state.status = "ready" if state.ready else "clarifying"
         state.messages.append(ChatMessage(role="assistant", content=state.assistant_message))
@@ -375,12 +374,11 @@ class PromptChatService:
         if intent == "semantic_edit" and _looks_like_full_regen(text):
             return self._handle_semantic_edit(manifest, state, text)
 
-        brief = str(result.get("edit_brief_en") or "").strip()
+        brief = self.llm.ensure_english_subject(text)
+        if not brief:
+            brief = str(result.get("edit_brief_en") or "").strip()
         if not brief:
             brief = _fallback_draft_en(text)
-        # Guard against grey-blob hallucinations when we have a photo/prior.
-        if _brief_looks_generic_blob(brief) and (prior or ref_photo):
-            brief = _guided_brief_from_context(text, prior)
 
         view_anchor = manifest.find_view_anchor()
         if view_anchor and view_anchor.is_file():
@@ -448,10 +446,13 @@ class PromptChatService:
         state.intent = "semantic_edit"
         state.assistant_message = str(result.get("assistant_message") or "").strip()
         state.questions = [str(q).strip() for q in (result.get("questions") or []) if str(q).strip()][:3]
-        state.edit_brief_en = str(result.get("edit_brief_en") or "").strip()
-        state.draft_prompt_en = state.edit_brief_en
+        brief = self.llm.ensure_english_subject(text)
+        if not brief:
+            brief = str(result.get("edit_brief_en") or "").strip()
+        state.edit_brief_en = brief
+        state.draft_prompt_en = brief
         state.planned_ops = []
-        state.ready = bool(result.get("ready")) and bool(state.edit_brief_en)
+        state.ready = bool(brief)
         state.status = "ready" if state.ready else "clarifying"
         state.assistant_message = _format_assistant_with_questions(
             state.assistant_message,

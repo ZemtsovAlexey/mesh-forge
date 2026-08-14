@@ -77,21 +77,6 @@ class LMStudioClient:
         )
         return _parse_json_response(text)
 
-    def enhance_prompt(self, prompt: str, mode: str = "organic") -> str:
-        system = (
-            "Improve this 3D object description for generation. "
-            "Output only the improved prompt, one paragraph."
-        )
-        if mode == "mechanical":
-            system += " Focus on dimensions in mm, simple printable geometry."
-        return self.chat(
-            self.config.llm.planner_model,
-            [
-                {"role": "system", "content": system},
-                {"role": "user", "content": prompt},
-            ],
-        ).strip()
-
     def clarify_or_enhance(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
         system = """You help prepare a short English subject line for text-to-3D image generation.
 Reply with ONLY valid JSON:
@@ -104,19 +89,7 @@ Reply with ONLY valid JSON:
   "confidence": 0.0
 }
 
-Rules for draft_prompt_en:
-- Faithful translation of what the user asked — do NOT reinvent or over-interpret.
-- Subject can be ANYTHING (character, animal, building, vehicle, prop, tool…) — never force
-  it into a different category than what the user asked for.
-- ONE short sentence (max ~35 words). No sample subjects — follow only the user text.
-- Keep pose/action/style words from the user when present.
-- Do NOT add: watertight, manifold, multiview, identical from all angles, clay/matte finish,
-  studio lighting, printable, silhouette, no holes, debris, geometric form, or similar
-  tech/quality boilerplate (that is added elsewhere).
-- Do NOT invent extra details the user did not mention.
-- Do NOT invent numeric dimensions unless the user gave them.
-
-Clarify rules:
+Clarify rules (draft_prompt_en in your JSON is ignored — server translates user text):
 - Prefer ready=true when the subject is clear. Ask questions ONLY if critical.
 - If ready=false: questions MUST contain 1-3 real question strings; assistant_message lists them.
 - If ready=true: questions=[], fill draft_prompt_en; assistant_message must be empty or a
@@ -143,10 +116,14 @@ Clarify rules:
             }
         data["intent"] = "create"
         questions = [str(q).strip() for q in (data.get("questions") or []) if str(q).strip()][:3]
-        draft = _sanitize_create_draft(str(data.get("draft_prompt_en") or "").strip())
-        if draft and not _looks_english(draft):
-            draft = self.ensure_english_subject(draft)
-        ready = bool(data.get("ready")) and bool(draft)
+        user_subject = _user_subject_from_messages(messages)
+        ready = bool(data.get("ready"))
+        if ready and user_subject:
+            draft = self.ensure_english_subject(user_subject)
+            ready = bool(draft)
+        else:
+            draft = ""
+            ready = False
         assistant = str(data.get("assistant_message") or "").strip()
 
         # Empty "I'll ask questions" responses are useless — force defaults or draft.
@@ -161,19 +138,17 @@ Clarify rules:
         return data
 
     def ensure_english_subject(self, text: str) -> str:
-        """Force a short English subject line for ComfyUI when input is not English."""
-        cleaned = (text or "").strip()
+        """Literal English translation for ComfyUI — trim only, no embellishment."""
+        cleaned = _trim_subject_prompt(text)
         if not cleaned:
             return ""
         if _looks_english(cleaned):
-            return _sanitize_create_draft(cleaned)
+            return cleaned
         system = (
-            "You are a literal translator for 3D image prompts.\n"
-            "Translate the USER message into ONE short English sentence for image generation.\n"
-            "Reply with ONLY that English sentence — no quotes, no JSON, no explanation.\n"
-            "CRITICAL: translate ONLY the user's subject. Do not invent, substitute, or add objects.\n"
-            "Keep meaning faithful. Do not invent extra details the user did not mention.\n"
-            "Do not include example subjects of your own."
+            "You are a literal translator.\n"
+            "Translate the USER message into English for image generation.\n"
+            "Reply with ONLY the translation — no quotes, no JSON, no explanation.\n"
+            "CRITICAL: translate faithfully. Do not add, remove, or change any detail."
         )
         try:
             out = self.chat(
@@ -184,19 +159,17 @@ Clarify rules:
                 ],
                 temperature=0.0,
             ).strip().strip('"').strip("'")
-            # Models sometimes wrap in JSON or add labels.
             if out.lower().startswith("draft:"):
                 out = out.split(":", 1)[1].strip()
             if out.startswith("{") and "draft" in out.lower():
                 parsed = _parse_json_response(out)
                 out = str(parsed.get("draft_prompt_en") or parsed.get("text") or out).strip()
-            out = _sanitize_create_draft(out)
+            out = _trim_subject_prompt(out)
             if out and _looks_english(out):
                 return out
         except Exception:
             pass
-        # Last-resort English wrapper without leaving Cyrillic as the subject.
-        return "A single small 3D-printable object matching the user description."
+        return ""
 
     def interpret_mesh_edit(
         self,
@@ -451,48 +424,23 @@ def _parse_json_response(text: str) -> dict[str, Any]:
         return {"operations": [], "summary": text, "parse_error": True}
 
 
-_DRAFT_BOILERPLATE_RE = re.compile(
-    r"\b("
-    r"watertight|manifold|multiview|identical character from all angles|"
-    r"matte clay(?: material)?(?: finish)?|smooth closed surface|"
-    r"no holes|no floating debris|photoreal fur|studio lighting|"
-    r"3d printable|printable (?:figurine|object)|for 3d print(?:ing)?|"
-    r"suitable for (?:multiview )?reconstruction|simple geometric form|"
-    r"optimized for 3d|clean manifold surface|closed surface without"
-    r")\b[^.]*\.?",
-    re.IGNORECASE,
-)
+_VIEW_PREFIXES = ("front:", "left:", "back:", "right:", "view:")
 
 
-def _sanitize_create_draft(draft: str) -> str:
-    """Strip quality/tech boilerplate the LLM loves to invent; keep subject short."""
-    text = (draft or "").strip()
-    if not text:
+def _trim_subject_prompt(text: str) -> str:
+    """Whitespace and accidental view-prefix cleanup only — no semantic edits."""
+    cleaned = (text or "").strip().strip('"').strip("'")
+    if not cleaned:
         return ""
-    # Drop sentences that are mostly boilerplate.
-    parts = re.split(r"(?<=[.!?])\s+", text)
-    kept: list[str] = []
-    for part in parts:
-        cleaned = _DRAFT_BOILERPLATE_RE.sub("", part).strip(" ,;")
-        cleaned = re.sub(r"\s{2,}", " ", cleaned).strip()
-        if len(cleaned) < 8:
-            continue
-        if _DRAFT_BOILERPLATE_RE.search(part) and len(cleaned) < 24:
-            continue
-        kept.append(cleaned)
-    text = " ".join(kept).strip() or draft.strip()
-    # Prefer the first sentence — later ones are usually invented polish.
-    text = re.split(r"(?<=[.!?])\s+", text)[0].strip()
-    # If still a comma-stack of invented details, keep the core clause(s).
-    words = text.split()
-    if len(words) > 22 and "," in text:
-        head = text.split(",")[0].strip()
-        if len(head.split()) >= 6:
-            text = head.rstrip(".,; ") + "."
-            words = text.split()
-    if len(words) > 28:
-        text = " ".join(words[:28]).rstrip(",;") + "."
-    return text
+    for prefix in _VIEW_PREFIXES:
+        if cleaned.lower().startswith(prefix):
+            cleaned = cleaned[len(prefix) :].strip()
+    return re.sub(r"\s{2,}", " ", cleaned).strip()
+
+
+def _user_subject_from_messages(messages: list[dict[str, Any]]) -> str:
+    bits = [str(m.get("content") or "").strip() for m in messages if m.get("role") == "user"]
+    return "\n".join(b for b in bits if b).strip()
 
 
 def _looks_english(text: str) -> bool:
