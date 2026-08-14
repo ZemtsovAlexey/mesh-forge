@@ -1,4 +1,6 @@
-# MeshForge-specific
+node_modules/
+web/node_modules/
+
 projects/
 config.yaml
 ui-stdout.log

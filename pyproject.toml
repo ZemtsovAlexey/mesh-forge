@@ -1,7 +1,7 @@
 [project]
 name = "mesh-forge"
 version = "0.1.0"
-description = "Local printable 3D mesh pipeline via ComfyUI"
+description = "Local 3D mesh chat agent"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -15,6 +15,7 @@ dependencies = [
     "open3d>=0.18.0",
     "openai>=1.50.0",
     "pillow>=10.0.0",
+    "pydantic-ai>=2.9,<3",
     "pymeshlab>=2023.12",
     "python-multipart>=0.0.9",
     "pyyaml>=6.0",

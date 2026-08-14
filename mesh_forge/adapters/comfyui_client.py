@@ -58,9 +58,16 @@ class ComfyUiClient:
         except Exception:
             return False
 
-    def generate_views(self, prompt: str, work_dir: Path, *, count: int = 4, project_id: str | None = None) -> ImageSet:
+    def generate_views(
+        self,
+        prompt: str,
+        work_dir: Path,
+        *,
+        count: int = 4,
+        project_id: str | None = None,
+        seed: int | None = None,
+    ) -> ImageSet:
         """Generate views according to comfyui.view_consistency."""
-        self.config = load_config()
         if not self.config.comfyui.enabled:
             raise RuntimeError("ComfyUI is disabled in config.yaml")
 
@@ -74,7 +81,11 @@ class ComfyUiClient:
                 with httpx.Client(timeout=120.0) as client:
                     if mode == "img2img":
                         workflow = self._load_text_to_multiview_workflow(
-                            pack.text_to_multiview, prompt=prompt, count=max(count, 4), run_id=run_id
+                            pack.text_to_multiview,
+                            prompt=prompt,
+                            count=max(count, 4),
+                            run_id=run_id,
+                            seed=seed,
                         )
                         history = self._submit_workflow(client, workflow)
                         views = self._collect_named_images(
@@ -88,7 +99,9 @@ class ComfyUiClient:
                         return views
 
                     # front first (off + zero123)
-                    front_wf = self._load_text_to_front_workflow(pack.text_to_front, prompt=prompt, run_id=run_id)
+                    front_wf = self._load_text_to_front_workflow(
+                        pack.text_to_front, prompt=prompt, run_id=run_id, seed=seed
+                    )
                     front_history = self._submit_workflow(client, front_wf)
                     front_views = self._collect_front_image(
                         client,
@@ -197,9 +210,8 @@ class ComfyUiClient:
 
         return TextToMeshResult(views=views, mesh=mesh)
 
-    def generate_front(self, prompt: str, work_dir: Path, *, project_id: str) -> ImageSet:
-        """Text → single front clay view (stepped pipeline)."""
-        self.config = load_config()
+    def generate_front(self, prompt: str, work_dir: Path, *, project_id: str, seed: int | None = None) -> ImageSet:
+        """Text → single front view."""
         if not self.config.comfyui.enabled:
             raise RuntimeError("ComfyUI is disabled in config.yaml")
         work_dir.mkdir(parents=True, exist_ok=True)
@@ -210,7 +222,7 @@ class ComfyUiClient:
                 with httpx.Client(timeout=180.0) as client:
                     prog.update(project_id, 20, "front")
                     front_wf = self._load_text_to_front_workflow(
-                        pack.text_to_front, prompt=prompt, run_id=run_id
+                        pack.text_to_front, prompt=prompt, run_id=run_id, seed=seed
                     )
                     history = self._submit_workflow(client, front_wf)
                     views = self._collect_front_image(
@@ -237,9 +249,9 @@ class ComfyUiClient:
         work_dir: Path,
         *,
         project_id: str,
+        seed: int | None = None,
     ) -> ImageSet:
-        """Approved front → left/back/right (img2img or Zero123) for stepped pipeline."""
-        self.config = load_config()
+        """Approved front → left/back/right (img2img or Zero123)."""
         if not self.config.comfyui.enabled:
             raise RuntimeError("ComfyUI is disabled in config.yaml")
         if not front_image.is_file():
@@ -276,6 +288,7 @@ class ComfyUiClient:
                         prompt=prompt,
                         uploaded_front=uploaded,
                         run_id=run_id,
+                        seed=seed,
                     )
                     history = self._submit_workflow(client, workflow)
                     views = self._collect_named_images(
@@ -526,7 +539,14 @@ class ComfyUiClient:
             items.append(art)
         return ImageSet(items=items)
 
-    def run_images_to_mesh(self, images: ImageSet, work_dir: Path, *, project_id: str) -> MeshArtifact:
+    def run_images_to_mesh(
+        self,
+        images: ImageSet,
+        work_dir: Path,
+        *,
+        project_id: str,
+        seed: int | None = None,
+    ) -> MeshArtifact:
         if not self.config.comfyui.enabled:
             raise RuntimeError("ComfyUI is disabled in config.yaml")
         if not images:
@@ -545,8 +565,6 @@ class ComfyUiClient:
                         label: self._upload_input_image(client, path, subfolder=f"meshforge/{run_id}")
                         for label, path in assigned.items()
                     }
-                    # Prefer single-view Hunyuan when we only have one reference —
-                    # stuffing the same front into MV slots hurts consistency.
                     unique_paths = {p.resolve() for p in assigned.values()}
                     if len(assigned) == 1 or len(unique_paths) == 1:
                         front_key = "front" if "front" in uploaded else next(iter(uploaded))
@@ -554,14 +572,15 @@ class ComfyUiClient:
                             pack.image_to_mesh,
                             uploaded_front=uploaded[front_key],
                             run_id=run_id,
+                            seed=seed,
                         )
                         output_node = pack.image_mesh_output
                     else:
-                        filled = self._fill_missing_views(uploaded)
                         workflow = self._load_multiview_to_mesh_workflow(
                             pack.multiview_to_mesh,
-                            uploaded_views=filled,
+                            uploaded_views=uploaded,
                             run_id=run_id,
+                            seed=seed,
                         )
                         output_node = pack.mesh_output
                     history = self._submit_workflow(client, workflow)
@@ -680,9 +699,11 @@ class ComfyUiClient:
             image_mesh_output="11",
         )
 
-    def _load_text_to_front_workflow(self, workflow_path: Path, *, prompt: str, run_id: str) -> dict[str, Any]:
+    def _load_text_to_front_workflow(
+        self, workflow_path: Path, *, prompt: str, run_id: str, seed: int | None = None
+    ) -> dict[str, Any]:
         workflow = self._read_workflow(workflow_path)
-        seed = random.randint(1, 2**31 - 1)
+        seed = seed if seed is not None else random.randint(1, 2**31 - 1)
         subject = self._normalize_subject_prompt(prompt)
         negative = self._build_view_negative(self.config.comfyui.negative_prompt)
         c = self.config.comfyui
@@ -709,9 +730,10 @@ class ComfyUiClient:
         prompt: str,
         uploaded_front: str,
         run_id: str,
+        seed: int | None = None,
     ) -> dict[str, Any]:
         workflow = self._read_workflow(workflow_path)
-        base_seed = random.randint(1, 2**31 - 1)
+        base_seed = seed if seed is not None else random.randint(1, 2**31 - 1)
         c = self.config.comfyui
         ckpt = (c.checkpoint or "").lower()
         view_denoise = float(c.view_denoise_turbo if "turbo" in ckpt else c.view_denoise)
@@ -747,12 +769,14 @@ class ComfyUiClient:
         )
         return self._render_workflow(workflow, replacements)
 
-    def _load_text_to_multiview_workflow(self, workflow_path: Path, *, prompt: str, count: int, run_id: str) -> dict[str, Any]:
+    def _load_text_to_multiview_workflow(
+        self, workflow_path: Path, *, prompt: str, count: int, run_id: str, seed: int | None = None
+    ) -> dict[str, Any]:
         if count < 4:
             raise ValueError("Text-to-mesh workflow requires 4 named views")
         workflow = self._read_workflow(workflow_path)
         # Front is txt2img; left/back/right are img2img from that front (shared identity).
-        base_seed = random.randint(1, 2**31 - 1)
+        base_seed = seed if seed is not None else random.randint(1, 2**31 - 1)
         c = self.config.comfyui
         ckpt = (c.checkpoint or "").lower()
         view_denoise = float(c.view_denoise_turbo if "turbo" in ckpt else c.view_denoise)
@@ -824,23 +848,46 @@ class ComfyUiClient:
         *,
         uploaded_views: dict[str, str],
         run_id: str,
+        seed: int | None = None,
     ) -> dict[str, Any]:
         workflow = self._read_workflow(workflow_path)
+        present = {key: value for key, value in uploaded_views.items() if key in VIEW_LABELS and value}
+        if not present:
+            raise RuntimeError("No views uploaded for multiview reconstruction")
+        if "front" not in present:
+            first = next(iter(present))
+            present = {"front": present[first], **{k: v for k, v in present.items() if k != first}}
+        node_map = {
+            "front": ("3", "4"),
+            "left": ("5", "6"),
+            "back": ("7", "8"),
+            "right": ("9", "10"),
+        }
+        cond_inputs = workflow.get("11", {}).get("inputs", {})
+        for label, (load_id, enc_id) in node_map.items():
+            if label not in present:
+                workflow.pop(load_id, None)
+                workflow.pop(enc_id, None)
+                cond_inputs.pop(label, None)
         replacements: dict[str, Any] = {
             "__MESH_CHECKPOINT__": self.config.comfyui.mesh_checkpoint,
-            "__FRONT_IMAGE__": uploaded_views["front"],
-            "__LEFT_IMAGE__": uploaded_views["left"],
-            "__BACK_IMAGE__": uploaded_views["back"],
-            "__RIGHT_IMAGE__": uploaded_views["right"],
             "__MESH_RESOLUTION__": self.config.comfyui.mesh_resolution,
             "__MESH_STEPS__": self.config.comfyui.mesh_steps,
             "__MESH_CFG__": self.config.comfyui.mesh_cfg,
             "__MESH_GUIDANCE__": self.config.comfyui.mesh_guidance,
             "__MESH_OCTREE__": self.config.comfyui.mesh_octree_resolution,
             "__MESH_CHUNKS__": self.config.comfyui.mesh_num_chunks,
-            "__MESH_SEED__": random.randint(1, 2**31 - 1),
+            "__MESH_SEED__": seed if seed is not None else random.randint(1, 2**31 - 1),
             "__MESH_OUTPUT__": f"meshforge/{run_id}/mesh",
         }
+        placeholder = {
+            "front": "__FRONT_IMAGE__",
+            "left": "__LEFT_IMAGE__",
+            "back": "__BACK_IMAGE__",
+            "right": "__RIGHT_IMAGE__",
+        }
+        for label, uploaded in present.items():
+            replacements[placeholder[label]] = uploaded
         return self._render_workflow(workflow, replacements)
 
     def _load_image_to_mesh_workflow(
@@ -849,6 +896,7 @@ class ComfyUiClient:
         *,
         uploaded_front: str,
         run_id: str,
+        seed: int | None = None,
     ) -> dict[str, Any]:
         workflow = self._read_workflow(workflow_path)
         replacements: dict[str, Any] = {
@@ -860,7 +908,7 @@ class ComfyUiClient:
             "__MESH_GUIDANCE__": self.config.comfyui.mesh_guidance,
             "__MESH_OCTREE__": self.config.comfyui.mesh_octree_resolution,
             "__MESH_CHUNKS__": self.config.comfyui.mesh_num_chunks,
-            "__MESH_SEED__": random.randint(1, 2**31 - 1),
+            "__MESH_SEED__": seed if seed is not None else random.randint(1, 2**31 - 1),
             "__MESH_OUTPUT__": f"meshforge/{run_id}/mesh",
         }
         return self._render_workflow(workflow, replacements)
@@ -874,11 +922,12 @@ class ComfyUiClient:
                 labeled[key] = item.path
             else:
                 unlabeled.append(item.path)
-        if labeled:
-            return labeled
-        assigned: dict[str, Path] = {}
-        for label, path in zip(VIEW_LABELS, unlabeled):
-            assigned[label] = path
+        assigned: dict[str, Path] = dict(labeled)
+        for path in unlabeled:
+            for label in VIEW_LABELS:
+                if label not in assigned:
+                    assigned[label] = path
+                    break
         if not assigned and unlabeled:
             assigned["front"] = unlabeled[0]
         return assigned

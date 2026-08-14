@@ -1,22 +1,24 @@
 # MeshForge
 
-Локальный сервер для подготовки печатаемых 3D-моделей из текста, набора фото и готового mesh в любой комбинации. Браузер — клиент, все сервисы работают на серверной машине.
+Локальный чат-агент для 3D: пишет, вызывает тулы, показывает картинки и интерактивный mesh в ленте.
 
-## Что умеет сейчас
+## Что умеет
 
-- единый pipeline `text / images / mesh -> STL`
-- text-to-3D через ComfyUI end-to-end (`text → named views → mesh`)
-- image-to-3D через ComfyUI (`1 фото` или `до 4 ракурсов`)
-- cleanup и редактирование существующего mesh
-- очередь GPU: один слот на LM Studio и ComfyUI; чат ждёт генерацию и наоборот. При `gpu.sequential_models: true` (по умолчанию) модели выгружаются при смене потребителя — нужно на 8GB VRAM. Позиция в очереди видна в прогрессе и в статус-пилюле `gpu`.
+- чат как в Cursor: тулы свёрнутыми карточками, стриминг, Stop
+- картинки в ленте (lightbox), STL/OBJ — Three.js прямо в сообщении (на весь экран)
+- агент на [pydantic-ai](https://ai.pydantic.dev/) + LM Studio
+- тулы: `generate_image`, `generate_views`, `images_to_mesh` (1–4 фото, без pad до 4), `look`, `inspect_mesh`, `repair_mesh`, `orient_mesh`, `scale_mesh`, `smooth_mesh`, `decimate_mesh`
+- knobs на каждый generate-вызов: seed, quality (draft/quality), steps, cfg, style, denoise, guidance
 
 ## Быстрый старт
 
-Зависимости управляются через [uv](https://docs.astral.sh/uv/) (`pyproject.toml` + `uv.lock`).
-
 ```powershell
-cd C:\AI\mesh-forge
+cd C:\Users\ZemtsovAlexey\Projects\mesh-forge
 .\scripts\setup.ps1
+cd web
+npm install
+npm run build
+cd ..
 .\scripts\start-comfyui.ps1
 .\scripts\run.ps1
 ```
@@ -27,23 +29,9 @@ cd C:\AI\mesh-forge
 .\scripts\run.ps1 -WithComfyUI
 ```
 
-Вручную:
+UI: `http://<host>:7860`
 
-```powershell
-uv sync
-uv run python .\server.py
-```
-
-UI:
-
-```text
-http://<server-ip>:7860
-```
-
-## Обязательные внешние сервисы
-
-- `LM Studio` local server: `http://127.0.0.1:1234/v1`
-- `ComfyUI` API: `http://127.0.0.1:8188`
+Нужны **LM Studio** (`http://127.0.0.1:1234/v1`) с моделью, у которой есть function calling, и **ComfyUI** (`http://127.0.0.1:8188`). Vision-модель — отдельно в настройках чата.
 
 ## ComfyUI
 
@@ -79,24 +67,12 @@ Checkpoint’ы:
 
 ## Конфиг
 
-Первый запуск создаёт `config.yaml` из example. Проверь:
+Первый запуск создаёт `config.yaml`. Проверь `llm.*`, `comfyui.*`, `paths.projects`, `gpu.sequential_models` (по умолчанию выгружать LLM/Comfy при смене слота — для 8GB VRAM).
 
-- `paths.projects`
-- `gpu.vram_gb` (NVIDIA определяется автоматически, для iGPU можно указать вручную)
-- `gpu.sequential_models` (`true` = выгружать LLM/ComfyUI при смене слота; `false` = только FIFO, без unload)
-- `llm.*`
-- `comfyui.install_dir`
-- `comfyui.*` checkpoints / workflow paths
-
-`setup.ps1` идемпотентен: повторный запуск не перекачивает `uv`, portable ComfyUI или checkpoint'ы, если валидная установка уже есть.
-
-## Локальные скрипты
+## Скрипты
 
 - `scripts/setup.ps1` — `uv sync` + ComfyUI + checkpoints
-- `scripts/setup-comfyui.ps1` — только ComfyUI
-- `scripts/start-comfyui.ps1` / `scripts/stop-comfyui.ps1`
-- `scripts/run.ps1` — FastAPI через `uv run` (`-WithComfyUI` опционально)
+- `scripts/start-comfyui.ps1` / `stop-comfyui.ps1`
+- `scripts/run.ps1` — FastAPI (`-WithComfyUI` опционально)
 
-## Mesh Post-Processing
-
-Blender больше не входит в runtime. Если вы задаёте `solidify_mm`, MeshForge оставит STL как есть и подскажет перенести толщину стенки в слайсер.
+Frontend в dev: `cd web && npm run dev` (прокси на `:7860`). Для сервера нужна сборка `npm run build` → `web/dist`.

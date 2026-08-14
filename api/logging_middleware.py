@@ -48,6 +48,10 @@ def register_logging(app: FastAPI) -> None:
 
     @app.exception_handler(Exception)
     async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+        from fastapi import HTTPException
+
+        if isinstance(exc, HTTPException):
+            return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
         logger.error(
             "Unhandled %s on %s %s\n%s",
             type(exc).__name__,

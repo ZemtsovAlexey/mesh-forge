@@ -1,0 +1,52 @@
+from __future__ import annotations
+
+from typing import Any, Literal
+
+from pydantic import BaseModel, Field
+
+
+class Artifact(BaseModel):
+    id: str
+    kind: Literal["image", "mesh", "mesh_preview", "file"]
+    name: str
+    label: str = ""
+    url: str = ""
+    view: str = ""
+
+
+class ToolCallRecord(BaseModel):
+    id: str
+    name: str
+    title: str = ""
+    status: Literal["running", "ok", "error"] = "running"
+    args: dict[str, Any] = Field(default_factory=dict)
+    knobs: dict[str, Any] = Field(default_factory=dict)
+    summary: str = ""
+    progress: float = 0
+    stage: str = ""
+    artifacts: list[Artifact] = Field(default_factory=list)
+
+
+class UiMessage(BaseModel):
+    id: str
+    role: Literal["user", "assistant"]
+    content: str = ""
+    created_at: str = ""
+    attachments: list[Artifact] = Field(default_factory=list)
+    tools: list[ToolCallRecord] = Field(default_factory=list)
+    artifacts: list[Artifact] = Field(default_factory=list)
+
+
+class ChatMeta(BaseModel):
+    id: str
+    title: str = "Новый чат"
+    created_at: str = ""
+    updated_at: str = ""
+    current_mesh: str = ""
+
+
+class ChatSummary(BaseModel):
+    id: str
+    title: str
+    updated_at: str
+    has_mesh: bool = False

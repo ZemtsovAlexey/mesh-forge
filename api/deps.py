@@ -2,14 +2,15 @@ from __future__ import annotations
 
 from functools import lru_cache
 
-from mesh_forge.manifest import ProjectManifest
-from mesh_forge.orchestrator import Orchestrator
+from mesh_forge.agent.runner import ChatRunner
+from mesh_forge.chat.store import ChatStore
 
 
 @lru_cache(maxsize=1)
-def get_orchestrator() -> Orchestrator:
-    return Orchestrator()
+def get_store() -> ChatStore:
+    return ChatStore()
 
 
-def load_project(project_id: str) -> ProjectManifest:
-    return ProjectManifest.load(project_id)
+@lru_cache(maxsize=1)
+def get_runner() -> ChatRunner:
+    return ChatRunner(get_store())
