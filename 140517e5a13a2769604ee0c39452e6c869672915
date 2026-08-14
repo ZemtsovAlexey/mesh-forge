@@ -1,0 +1,54 @@
+mesh_forge/adapters/comfyui_client.py
+  1d63f34129d79088 545,547
+README.md
+  1d63f34129d79088 32,34
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "git-ai-lite-1.0.0",
+  "base_commit_sha": "e36d0f1dfceceea454cd6356f0d6cd999a43e009",
+  "prompts": {
+    "5e68c5b78fb616cb": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "fae1d709-ec13-42f0-89d3-343a955cbc79",
+        "model": "grok-4.6"
+      },
+      "human_author": "╨Ч╨╡╨╝╤Ж╨╛╨▓ ╨Р╨╗╨╡╨║╤Б╨╡╨╣ <zemtsov@moedelo.org>",
+      "messages": [],
+      "total_additions": 76793,
+      "total_deletions": 0,
+      "accepted_lines": 0,
+      "accepted_deletions": 0,
+      "overridden_lines": 76793
+    },
+    "1114ff0af4f894eb": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "c7a81525-cfca-4e7a-b5cf-4a275cfa87d9",
+        "model": "grok-4.6"
+      },
+      "human_author": "╨Ч╨╡╨╝╤Ж╨╛╨▓ ╨Р╨╗╨╡╨║╤Б╨╡╨╣ <zemtsov@moedelo.org>",
+      "messages": [],
+      "total_additions": 162,
+      "total_deletions": 26,
+      "accepted_lines": 0,
+      "accepted_deletions": 0,
+      "overridden_lines": 162
+    },
+    "1d63f34129d79088": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "5d10e5da-3d22-4455-9356-451f7fd06b60",
+        "model": "grok-4.6"
+      },
+      "human_author": "╨Ч╨╡╨╝╤Ж╨╛╨▓ ╨Р╨╗╨╡╨║╤Б╨╡╨╣ <zemtsov@moedelo.org>",
+      "messages": [],
+      "total_additions": 117,
+      "total_deletions": 221,
+      "accepted_lines": 4,
+      "accepted_deletions": 25,
+      "overridden_lines": 113
+    }
+  }
+}
