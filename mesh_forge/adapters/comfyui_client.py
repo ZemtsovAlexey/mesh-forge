@@ -20,6 +20,7 @@ from mesh_forge.runtime import get_gpu_scheduler
 logger = logging.getLogger("mesh_forge.comfyui")
 
 VIEW_LABELS = ("front", "left", "back", "right")
+_MESH_SUFFIXES = {".glb", ".gltf", ".obj", ".stl", ".ply"}
 
 
 @dataclass
@@ -644,7 +645,12 @@ class ComfyUiClient:
             payload = response.json()
             if payload and prompt_id in payload:
                 prog.raise_if_cancelled(project_id)
-                return payload[prompt_id]
+                entry = payload[prompt_id]
+                status = entry.get("status") if isinstance(entry, dict) else None
+                if isinstance(status, dict) and status.get("completed") is False:
+                    time.sleep(1.0)
+                    continue
+                return entry
             time.sleep(1.0)
         raise TimeoutError("Timed out waiting for ComfyUI workflow output")
 
@@ -1034,11 +1040,19 @@ class ComfyUiClient:
         output_node: str,
     ) -> MeshArtifact:
         output_dir.mkdir(parents=True, exist_ok=True)
-        outputs = history.get("outputs", {})
+        outputs = history.get("outputs") or {}
         node_data = outputs.get(str(output_node)) or {}
         record = self._first_output_record(node_data)
         if not record:
-            raise RuntimeError("ComfyUI produced no mesh artifact")
+            record = self._first_mesh_record(outputs)
+        if not record:
+            failure = self._history_failure(history)
+            if failure:
+                raise RuntimeError(f"ComfyUI mesh workflow failed ({failure})")
+            keys = ", ".join(str(k) for k in outputs) or "none"
+            raise RuntimeError(
+                f"ComfyUI produced no mesh artifact (node {output_node}; history nodes: {keys})"
+            )
         suffix = Path(record["filename"]).suffix.lower() or ".glb"
         dest = output_dir / f"mesh{suffix}"
         self._download_output(client, record, dest)
@@ -1078,13 +1092,63 @@ class ComfyUiClient:
         response.raise_for_status()
         dest.write_bytes(response.content)
 
+    def _as_output_record(self, item: Any) -> dict[str, Any] | None:
+        if not isinstance(item, dict):
+            return None
+        name = str(item.get("filename") or item.get("name") or "").strip()
+        if not name:
+            return None
+        record = dict(item)
+        record.setdefault("filename", name)
+        return record
+
     def _first_output_record(self, node_data: dict[str, Any]) -> dict[str, Any] | None:
+        if not isinstance(node_data, dict):
+            return None
         for values in node_data.values():
-            if not isinstance(values, list):
+            if isinstance(values, list):
+                for item in values:
+                    record = self._as_output_record(item)
+                    if record:
+                        return record
+            else:
+                record = self._as_output_record(values)
+                if record:
+                    return record
+        return None
+
+    def _first_mesh_record(self, outputs: dict[str, Any]) -> dict[str, Any] | None:
+        fallback: dict[str, Any] | None = None
+        if not isinstance(outputs, dict):
+            return None
+        for node_data in outputs.values():
+            record = self._first_output_record(node_data if isinstance(node_data, dict) else {})
+            if not record:
                 continue
-            for item in values:
-                if isinstance(item, dict) and "filename" in item:
-                    return item
+            suffix = Path(str(record.get("filename") or "")).suffix.lower()
+            if suffix in _MESH_SUFFIXES:
+                return record
+            if fallback is None:
+                fallback = record
+        return fallback
+
+    def _history_failure(self, history: dict[str, Any]) -> str | None:
+        status = history.get("status") if isinstance(history, dict) else None
+        if not isinstance(status, dict):
+            return None
+        for item in status.get("messages") or []:
+            if not isinstance(item, (list, tuple)) or not item:
+                continue
+            if str(item[0] or "") != "execution_error":
+                continue
+            payload = item[1] if len(item) > 1 and isinstance(item[1], dict) else {}
+            node = str(payload.get("node_type") or payload.get("node_id") or "").strip()
+            message = str(
+                payload.get("exception_message") or payload.get("exception_type") or "execution error"
+            ).strip().splitlines()[0][:400]
+            return f"{node}: {message}" if node else message
+        if str(status.get("status_str") or "").lower() == "error":
+            return "workflow status=error"
         return None
 
     def _format_prompt_error(self, exc: httpx.HTTPStatusError) -> str:

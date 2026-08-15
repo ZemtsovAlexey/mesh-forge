@@ -323,6 +323,18 @@ def _fail_running_tools(tools: list[ToolCallRecord], message: str) -> None:
             rec.summary = rec.summary or note
 
 
+def _tool_succeeded(content: str) -> bool:
+    text = (content or "").strip()
+    if not text:
+        return False
+    lower = text.lower()
+    if lower.startswith("error") or lower.startswith("cannot "):
+        return False
+    if "input should be" in lower or "'type': 'model_type'" in text or '"type": "model_type"' in text:
+        return False
+    return True
+
+
 def _extract_knobs(summary: str) -> dict[str, Any]:
     marker = "knobs="
     if marker not in summary:
@@ -386,7 +398,7 @@ def _map_agent_event(event: object) -> dict[str, Any] | None:
             return {"type": "tool_start", "id": call_id, "name": name, "args": args or {}}
         if isinstance(event, FunctionToolResultEvent):
             call_id, content = _tool_return_text(event)
-            ok = bool(content) and not content.lower().startswith("error")
+            ok = _tool_succeeded(content)
             return {"type": "tool_end", "id": call_id, "ok": ok, "summary": content[:2000]}
         if isinstance(event, ToolCallPart):
             return {

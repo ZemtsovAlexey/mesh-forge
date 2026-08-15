@@ -67,7 +67,8 @@ def build_workspace_brief(
         return ""
     lines.append(
         "Short follow-ups (продолжи / дальше / ok) continue this job: "
-        "use the image ids above for images_to_mesh, do not ask for a new object description."
+        "use the image ids above as strings in images_to_mesh (e.g. images=[\"a19885e6_front\"]), "
+        "do not ask for a new object description."
     )
     return "\n".join(lines)
 

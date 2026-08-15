@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Annotated, Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, BeforeValidator, model_validator
 from pydantic_ai import RunContext
 
 from mesh_forge.adapters import ComfyUiClient
@@ -13,10 +14,44 @@ from mesh_forge.ops.geometry import load_mesh, save_mesh
 from mesh_forge.tools.base import MeshTool
 from mesh_forge.tools.knobs import MeshGenKnobs, ViewName, apply_mesh_knobs
 
+_VIEW_NAMES = ("front", "left", "back", "right")
+
+
+def _view_from_name(value: str) -> str | None:
+    stem = Path(str(value or "")).stem.strip().lower()
+    for view in _VIEW_NAMES:
+        if stem == view or stem.endswith(f"_{view}") or stem.endswith(f"-{view}"):
+            return view
+    return None
+
 
 class ImageRef(BaseModel):
     ref: str
     view: ViewName | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_ref(cls, data: Any) -> Any:
+        if isinstance(data, str):
+            return {"ref": data, "view": _view_from_name(data)}
+        if isinstance(data, dict):
+            payload = dict(data)
+            if not payload.get("ref"):
+                alt = payload.get("id") or payload.get("name") or payload.get("image")
+                if alt:
+                    payload["ref"] = alt
+            if not payload.get("view"):
+                payload["view"] = _view_from_name(str(payload.get("ref") or ""))
+            return payload
+        return data
+
+
+def _coerce_image_list(value: Any) -> Any:
+    if value is None or value == "":
+        return None
+    if isinstance(value, (str, dict)):
+        return [value]
+    return value
 
 
 class ImagesToMesh(MeshTool):
@@ -26,7 +61,7 @@ class ImagesToMesh(MeshTool):
     def run(
         self,
         ctx: RunContext[ChatDeps],
-        images: list[ImageRef] | None = None,
+        images: Annotated[list[ImageRef] | None, BeforeValidator(_coerce_image_list)] = None,
         seed: int | None = None,
         quality: str | None = None,
         steps: int | None = None,
@@ -35,7 +70,8 @@ class ImagesToMesh(MeshTool):
     ) -> str:
         """Reconstruct STL from N photos (1, 2, 3, or 4). Hunyuan MV max is 4 named cameras.
 
-        Pass explicit refs. If images is empty, use this-turn photo attachments only (not chat history).
+        images: artifact ids as strings, e.g. ["a19885e6_front"]. Objects {ref, view} also work.
+        If images is empty, use this-turn photo attachments only (not chat history).
         1 image → single-view Hunyuan. 2–4 → multiview with ONLY provided slots (no front-padding).
         Several generate_image fronts are NOT left/back/right — use one photo, or generate_views for a real orbit.
         >4: first 4 used, rest reported as dropped. Label views after look if you know front/left/back/right.
@@ -64,12 +100,20 @@ class ImagesToMesh(MeshTool):
         ]
         work = ctx.deps.files_dir() / "work"
         prog.start(ctx.deps.chat_id, "images_to_mesh", "mesh")
-        mesh = client.run_images_to_mesh(
-            ImageSet(items=items),
-            work,
-            project_id=ctx.deps.chat_id,
-            seed=echo["seed"],
-        )
+        try:
+            mesh = client.run_images_to_mesh(
+                ImageSet(items=items),
+                work,
+                project_id=ctx.deps.chat_id,
+                seed=echo["seed"],
+            )
+        except Exception as exc:
+            views = ", ".join(f"{label}={path.name}" for label, path in picked)
+            return (
+                f"ERROR: Hunyuan failed on {len(picked)} image(s): {views}. {exc}. "
+                "Do not repair. Retry images_to_mesh with ONE front photo and a new seed."
+                f" knobs={echo}"
+            )
         dest = ctx.deps.store.new_file(ctx.deps.chat_id, "mesh.stl")
         try:
             save_mesh(load_mesh(mesh.path), dest)
@@ -113,7 +157,7 @@ def _pick_images(
             except FileNotFoundError:
                 dropped.append(item.ref)
                 continue
-            selected.append((item.view or "", path))
+            selected.append((item.view or _view_from_name(item.ref) or _view_from_name(path.name) or "", path))
     else:
         photos = [a for a in ctx.deps.attachments if a.kind == "image"]
         for art in photos:

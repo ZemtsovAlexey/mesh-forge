@@ -22,15 +22,26 @@
 }
 
 * { box-sizing: border-box; }
-html, body, #root { height: 100%; margin: 0; background: var(--bg); color: var(--text); color-scheme: dark; }
+html, body, #root {
+  height: 100%;
+  max-height: 100dvh;
+  margin: 0;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--text);
+  color-scheme: dark;
+}
 button, textarea, input { font: inherit; color: inherit; }
 button { cursor: pointer; }
 ::selection { background: var(--accent-soft); color: var(--text); }
 
 .app {
   display: grid;
-  grid-template-columns: 248px 1fr;
+  grid-template-columns: 248px minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
   height: 100%;
+  max-height: 100dvh;
+  overflow: hidden;
 }
 
 .sidebar {
@@ -39,12 +50,17 @@ button { cursor: pointer; }
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
 }
 .sidebar-head {
   display: flex;
   align-items: center;
   gap: 10px;
   padding: 18px 16px 14px;
+  flex-shrink: 0;
 }
 .brand-mark {
   width: 28px;
@@ -53,7 +69,7 @@ button { cursor: pointer; }
 }
 .brand { font-weight: 600; letter-spacing: -0.03em; flex: 1; font-size: 15px; line-height: 1.15; }
 .brand span { display: block; font-size: 11px; color: var(--muted); font-weight: 400; letter-spacing: 0.04em; text-transform: uppercase; }
-.sidebar-actions { padding: 0 12px 12px; }
+.sidebar-actions { padding: 0 12px 12px; flex-shrink: 0; }
 .new-chat {
   width: 100%;
   display: flex;
@@ -68,7 +84,7 @@ button { cursor: pointer; }
   font-weight: 500;
 }
 .new-chat:hover { background: rgba(224, 176, 122, 0.22); }
-.chat-list { flex: 1; overflow: auto; padding: 4px 8px 16px; }
+.chat-list { flex: 1 1 0; min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 4px 8px 16px; }
 .chat-item {
   width: 100%;
   text-align: left;
@@ -120,6 +136,9 @@ button { cursor: pointer; }
   display: flex;
   flex-direction: column;
   min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
   background:
     radial-gradient(900px 420px at 50% -80px, rgba(224, 176, 122, 0.07), transparent 55%),
     var(--bg);
@@ -129,6 +148,7 @@ button { cursor: pointer; }
   align-items: center;
   gap: 10px;
   padding: 14px 28px 10px;
+  flex-shrink: 0;
 }
 .topbar h2 { font-size: 14px; font-weight: 500; margin: 0; flex: 1; color: var(--muted); letter-spacing: 0.01em; }
 .status-pills { display: flex; gap: 8px; align-items: center; }
@@ -143,8 +163,10 @@ button { cursor: pointer; }
 .dot.busy { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
 
 .transcript {
-  flex: 1;
+  flex: 1 1 0;
+  min-height: 0;
   overflow: auto;
+  overscroll-behavior: contain;
   padding: 8px 0 12px;
 }
 .transcript-inner { max-width: 760px; margin: 0 auto; padding: 0 28px 24px; }
@@ -344,6 +366,7 @@ button { cursor: pointer; }
 
 .composer {
   padding: 4px 20px 22px;
+  flex-shrink: 0;
   background: linear-gradient(transparent, var(--bg) 28%);
 }
 .composer-inner {
