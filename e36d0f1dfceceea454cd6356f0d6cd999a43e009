@@ -1,0 +1,40 @@
+README.md
+  5e68c5b78fb616cb 76
+scripts/start-comfyui.ps1
+  5e68c5b78fb616cb 3,13-17,20,28,86,95
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "git-ai-lite-1.0.0",
+  "base_commit_sha": "9b31132fe6c5b380364cf8ee721064212749a2cd",
+  "prompts": {
+    "5ef40c49ffa13873": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "082b79c7-b164-4f05-80b6-052c7dae6826",
+        "model": "grok-4.6"
+      },
+      "human_author": "╨Ч╨╡╨╝╤Ж╨╛╨▓ ╨Р╨╗╨╡╨║╤Б╨╡╨╣ <zemtsov@moedelo.org>",
+      "messages": [],
+      "total_additions": 1173191,
+      "total_deletions": 0,
+      "accepted_lines": 0,
+      "accepted_deletions": 0,
+      "overridden_lines": 1173191
+    },
+    "5e68c5b78fb616cb": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "fae1d709-ec13-42f0-89d3-343a955cbc79",
+        "model": "grok-4.6"
+      },
+      "human_author": "╨Ч╨╡╨╝╤Ж╨╛╨▓ ╨Р╨╗╨╡╨║╤Б╨╡╨╣ <zemtsov@moedelo.org>",
+      "messages": [],
+      "total_additions": 11,
+      "total_deletions": 6,
+      "accepted_lines": 11,
+      "accepted_deletions": 3,
+      "overridden_lines": 0
+    }
+  }
+}
