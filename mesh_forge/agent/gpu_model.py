@@ -50,4 +50,5 @@ def build_chat_model(config: AppConfig) -> GpuOpenAIChatModel:
             base_url=config.llm.base_url,
             api_key=config.llm.api_key or "lm-studio",
         ),
+        profile={"openai_chat_supports_multiple_system_messages": False},
     )

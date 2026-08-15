@@ -4,7 +4,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import numpy as np
-import trimesh
+from trimesh import Scene
+
+from mesh_forge.ops.geometry import read_trimesh
 
 
 @dataclass
@@ -49,15 +51,11 @@ def analyze_mesh(mesh_path: Path) -> MeshStats:
         issues.append("Mesh file is empty")
         return MeshStats(issues=issues)
 
-    loaded = trimesh.load(mesh_path, force="mesh", process=False)
-    if isinstance(loaded, trimesh.Scene):
-        geoms = [g for g in loaded.geometry.values() if hasattr(g, "vertices")]
-        if not geoms:
-            issues.append("Scene contains no geometry")
-            return MeshStats(issues=issues)
-        mesh = trimesh.util.concatenate(geoms)
-    else:
-        mesh = loaded
+    loaded = read_trimesh(mesh_path)
+    if loaded is None or isinstance(loaded, Scene):
+        issues.append("Scene contains no geometry")
+        return MeshStats(issues=issues)
+    mesh = loaded
 
     if mesh is None or len(getattr(mesh, "vertices", [])) == 0:
         issues.append("Mesh has no vertices")
@@ -126,3 +124,10 @@ def is_print_ready(stats: MeshStats, min_wall_hint_mm: float = 0.4) -> bool:
     if stats.min_edge_mm is not None and stats.min_edge_mm < min_wall_hint_mm:
         return False
     return True
+
+
+def mesh_is_usable(path: Path, *, min_vertices: int = 8, min_faces: int = 4) -> tuple[bool, str]:
+    stats = analyze_mesh(path)
+    if stats.vertex_count < min_vertices or stats.triangle_count < min_faces:
+        return False, stats.summary()
+    return True, stats.summary()

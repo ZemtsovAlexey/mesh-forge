@@ -34,6 +34,12 @@ class ToolCallOut(BaseModel):
     artifacts: list[ArtifactOut] = Field(default_factory=list)
 
 
+class MessageBlockOut(BaseModel):
+    kind: str = "text"
+    text: str = ""
+    tool_id: str = ""
+
+
 class MessageOut(BaseModel):
     id: str
     role: str
@@ -42,6 +48,7 @@ class MessageOut(BaseModel):
     attachments: list[ArtifactOut] = Field(default_factory=list)
     tools: list[ToolCallOut] = Field(default_factory=list)
     artifacts: list[ArtifactOut] = Field(default_factory=list)
+    blocks: list[MessageBlockOut] = Field(default_factory=list)
 
 
 class ChatDetail(BaseModel):
@@ -71,6 +78,10 @@ class GpuQueueEntry(BaseModel):
 class GpuQueueInfo(BaseModel):
     active: GpuQueueEntry | None = None
     waiting: list[GpuQueueEntry] = Field(default_factory=list)
+    shared: bool = True
+    actives: list[GpuQueueEntry] = Field(default_factory=list)
+    llm_host: str = ""
+    comfy_host: str = ""
 
 
 class SystemStatus(BaseModel):

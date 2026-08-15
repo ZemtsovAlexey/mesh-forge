@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import itertools
+import logging
 import threading
 import time
 from collections import deque
@@ -8,10 +9,16 @@ from dataclasses import dataclass, field
 from typing import Callable, Literal
 
 from mesh_forge import progress as prog
-from mesh_forge.runtime.gpu_handoff import switch_vram
+from mesh_forge.runtime.gpu_handoff import queues_are_split, service_host_key, switch_vram
+
+logger = logging.getLogger("mesh_forge.gpu")
 
 GpuKind = Literal["llm", "comfy"]
 HandoffFn = Callable[[GpuKind, GpuKind], None]
+
+
+def _noop_handoff(_from: GpuKind, _to: GpuKind) -> None:
+    return
 
 
 @dataclass
@@ -26,17 +33,34 @@ class GpuQueueEntry:
 class GpuQueueSnapshot:
     active: GpuQueueEntry | None
     waiting: list[GpuQueueEntry] = field(default_factory=list)
+    shared: bool = True
+    actives: list[GpuQueueEntry] = field(default_factory=list)
+    llm_host: str = ""
+    comfy_host: str = ""
 
     def status_text(self) -> str:
-        if self.active is None:
-            return "GPU scheduler: idle"
-        wait = len(self.waiting)
-        return f"GPU scheduler: busy ({self.active.label}, waiting={wait})"
+        if self.shared:
+            if self.active is None:
+                return "GPU scheduler: idle (shared)"
+            wait = len(self.waiting)
+            return f"GPU scheduler: busy ({self.active.label}, waiting={wait})"
+        llm_busy = next((item.label for item in self.actives if item.kind == "llm"), None)
+        comfy_busy = next((item.label for item in self.actives if item.kind == "comfy"), None)
+        llm_wait = sum(1 for item in self.waiting if item.kind == "llm")
+        comfy_wait = sum(1 for item in self.waiting if item.kind == "comfy")
+        llm_part = llm_busy or "idle"
+        if llm_wait:
+            llm_part += f" wait={llm_wait}"
+        comfy_part = comfy_busy or "idle"
+        if comfy_wait:
+            comfy_part += f" wait={comfy_wait}"
+        hosts = f"{self.llm_host or '?'} != {self.comfy_host or '?'}"
+        return f"GPU queues split ({hosts}): llm={llm_part}; comfy={comfy_part}"
 
 
 @dataclass
 class GpuLease:
-    scheduler: "GpuScheduler"
+    scheduler: "_GpuLane"
     kind: GpuKind
     label: str
     project_id: str | None
@@ -65,24 +89,22 @@ class _Waiter:
     token: int
 
 
-class GpuScheduler:
-    def __init__(self, handoff: HandoffFn | None = None) -> None:
+class _GpuLane:
+    """FIFO lock for one GPU resource (shared device, or a single service)."""
+
+    def __init__(self, handoff: HandoffFn | None = None, *, resource: str = "GPU") -> None:
         self._condition = threading.Condition()
         self._waiters: deque[_Waiter] = deque()
         self._active: GpuLease | None = None
         self._last_kind: GpuKind | None = None
         self._tokens = itertools.count(1)
         self._handoff = handoff or switch_vram
+        self._resource = resource
 
     @property
     def active_project_id(self) -> str | None:
         with self._condition:
             return self._active.project_id if self._active else None
-
-    @property
-    def _active_project(self) -> str | None:
-        # Back-compat for getattr(scheduler, "_active_project", None)
-        return self.active_project_id
 
     def acquire(
         self,
@@ -97,6 +119,7 @@ class GpuScheduler:
         prev_kind: GpuKind | None = None
         do_handoff = False
         lease: GpuLease | None = None
+        waited = False
 
         with self._condition:
             self._waiters.append(waiter)
@@ -116,6 +139,7 @@ class GpuScheduler:
                         break
                     wait_stage = self._wait_stage(waiter)
 
+                waited = True
                 if project_id and wait_stage:
                     prog.update(project_id, 4, wait_stage)
 
@@ -143,7 +167,10 @@ class GpuScheduler:
                     pass
             if project_id:
                 prog.raise_if_cancelled(project_id)
-                prog.update(project_id, 10, f"GPU выделен: {label}")
+                if do_handoff:
+                    prog.update(project_id, 10, f"GPU выделен: {label}")
+                elif waited:
+                    prog.update(project_id, 10, label)
             return lease
         except BaseException:
             lease.release()
@@ -174,7 +201,7 @@ class GpuScheduler:
                 position = index
                 break
         current = self._active.label if self._active else waiter.label
-        return f"Ожидание GPU: позиция {position}, сейчас {current}"
+        return f"Ожидание {self._resource}: позиция {position}, сейчас {current}"
 
     def release(self, lease: GpuLease) -> None:
         with self._condition:
@@ -213,16 +240,141 @@ class GpuScheduler:
                 )
                 for index, waiter in enumerate(self._waiters, start=1)
             ]
-            return GpuQueueSnapshot(active=active, waiting=waiting)
-
-    def status_text(self) -> str:
-        return self.snapshot().status_text()
+            return GpuQueueSnapshot(
+                active=active,
+                waiting=waiting,
+                actives=[active] if active else [],
+            )
 
     def _drop_waiter(self, waiter: _Waiter) -> None:
         try:
             self._waiters.remove(waiter)
         except ValueError:
             pass
+
+
+class GpuScheduler:
+    """One shared GPU queue, or independent LLM/Comfy queues when hosts differ."""
+
+    def __init__(self, handoff: HandoffFn | None = None) -> None:
+        self._handoff = handoff or switch_vram
+        self._shared = _GpuLane(handoff=self._handoff, resource="GPU")
+        self._split: dict[GpuKind, _GpuLane] = {
+            "llm": _GpuLane(handoff=_noop_handoff, resource="LM Studio"),
+            "comfy": _GpuLane(handoff=_noop_handoff, resource="ComfyUI"),
+        }
+        self._mode_lock = threading.Lock()
+        self._logged_mode: str | None = None
+
+    def _split_queues(self) -> bool:
+        try:
+            from mesh_forge.config import load_config
+
+            return queues_are_split(load_config())
+        except Exception:
+            return False
+
+    def _lane(self, kind: GpuKind) -> _GpuLane:
+        split = self._split_queues()
+        mode = "split" if split else "shared"
+        with self._mode_lock:
+            if mode != self._logged_mode:
+                self._log_mode(split)
+                self._logged_mode = mode
+        if split:
+            return self._split[kind]
+        return self._shared
+
+    def _log_mode(self, split: bool) -> None:
+        try:
+            from mesh_forge.config import load_config
+
+            cfg = load_config()
+            llm_host = service_host_key(cfg.llm.base_url) or cfg.llm.base_url
+            comfy_host = service_host_key(cfg.comfyui.base_url) or cfg.comfyui.base_url
+        except Exception:
+            llm_host = "?"
+            comfy_host = "?"
+        if split:
+            logger.info(
+                "GPU queues split: LM Studio @ %s, ComfyUI @ %s — no VRAM handoff",
+                llm_host,
+                comfy_host,
+            )
+        else:
+            logger.info(
+                "GPU queue shared: LM Studio @ %s, ComfyUI @ %s — unload on kind switch",
+                llm_host,
+                comfy_host,
+            )
+
+    def _all_lanes(self) -> tuple[_GpuLane, ...]:
+        return (self._shared, self._split["llm"], self._split["comfy"])
+
+    @property
+    def active_project_id(self) -> str | None:
+        if self._split_queues():
+            return self._split["comfy"].active_project_id or self._split["llm"].active_project_id
+        return self._shared.active_project_id
+
+    @property
+    def _active_project(self) -> str | None:
+        return self.active_project_id
+
+    def acquire(
+        self,
+        label: str,
+        *,
+        kind: GpuKind,
+        project_id: str | None = None,
+        timeout_s: int = 3600,
+    ) -> GpuLease:
+        return self._lane(kind).acquire(label, kind=kind, project_id=project_id, timeout_s=timeout_s)
+
+    def wake(self) -> None:
+        for lane in self._all_lanes():
+            lane.wake()
+
+    def holds(self, project_id: str, *, kind: GpuKind | None = None) -> bool:
+        if kind is not None:
+            if self._lane(kind).holds(project_id, kind=kind):
+                return True
+            return any(lane.holds(project_id, kind=kind) for lane in self._all_lanes())
+        return any(lane.holds(project_id) for lane in self._all_lanes())
+
+    def snapshot(self) -> GpuQueueSnapshot:
+        try:
+            from mesh_forge.config import load_config
+
+            cfg = load_config()
+            llm_host = service_host_key(cfg.llm.base_url)
+            comfy_host = service_host_key(cfg.comfyui.base_url)
+            split = queues_are_split(cfg)
+        except Exception:
+            llm_host = ""
+            comfy_host = ""
+            split = False
+        if not split:
+            snap = self._shared.snapshot()
+            snap.shared = True
+            snap.actives = [snap.active] if snap.active else []
+            snap.llm_host = llm_host
+            snap.comfy_host = comfy_host
+            return snap
+        llm = self._split["llm"].snapshot()
+        comfy = self._split["comfy"].snapshot()
+        actives = [item for item in (llm.active, comfy.active) if item is not None]
+        return GpuQueueSnapshot(
+            active=actives[0] if actives else None,
+            waiting=list(llm.waiting) + list(comfy.waiting),
+            shared=False,
+            actives=actives,
+            llm_host=llm_host,
+            comfy_host=comfy_host,
+        )
+
+    def status_text(self) -> str:
+        return self.snapshot().status_text()
 
 
 _scheduler = GpuScheduler()

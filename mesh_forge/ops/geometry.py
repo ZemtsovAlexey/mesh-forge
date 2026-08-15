@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import logging
 from pathlib import Path
 from typing import Any
@@ -10,14 +11,26 @@ import trimesh
 logger = logging.getLogger("mesh_forge.geometry")
 
 
-def load_mesh(path: Path) -> trimesh.Trimesh:
-    loaded = trimesh.load(path, force="mesh", process=False)
+def read_trimesh(path: Path):
+    """Load a mesh file, including GLB bytes that were saved with a .stl suffix."""
+    data = path.read_bytes()
+    if data[:4] == b"glTF":
+        loaded = trimesh.load(io.BytesIO(data), file_type="glb", force="mesh", process=False)
+    else:
+        loaded = trimesh.load(path, force="mesh", process=False)
     if isinstance(loaded, trimesh.Scene):
         geoms = [g for g in loaded.geometry.values() if hasattr(g, "vertices") and len(g.vertices) > 0]
         if not geoms:
-            raise ValueError(f"No geometry in mesh file: {path}")
+            return loaded
         loaded = trimesh.util.concatenate(geoms)
-    if len(loaded.vertices) == 0:
+    return loaded
+
+
+def load_mesh(path: Path) -> trimesh.Trimesh:
+    loaded = read_trimesh(path)
+    if isinstance(loaded, trimesh.Scene):
+        raise ValueError(f"No geometry in mesh file: {path}")
+    if len(getattr(loaded, "vertices", [])) == 0:
         raise ValueError(f"Mesh has no vertices: {path}")
     return loaded
 

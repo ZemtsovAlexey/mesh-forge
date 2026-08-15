@@ -21,22 +21,39 @@ class RepairMesh(MeshTool):
         keep_largest: bool = True,
         remove_needles: bool = True,
     ) -> str:
-        """Repair mesh: holes, non-manifold, drop floaters, needle faces. Uses current mesh if mesh_ref omitted."""
+        """Repair mesh: holes, non-manifold, drop floaters, needle faces. Uses current mesh if mesh_ref omitted.
+
+        Do not call on an empty mesh (0 vertices). That is a failed reconstruction — retry images_to_mesh instead.
+        """
+        from mesh_forge.mesh_qc import mesh_is_usable
+
         src = resolve_mesh(ctx, mesh_ref)
-        mesh = load_mesh(src)
-        notes: list[str] = []
-        if keep_largest:
-            mesh = keep_largest_component(mesh, single=True)
-            notes.append("largest-component")
-        if remove_needles:
-            mesh = remove_needle_faces(mesh)
-            notes.append("needles")
-        if close_holes:
-            try:
-                mesh = repair_with_pymeshlab(mesh, smooth_iters=0)
-                notes.append("pymeshlab")
-            except Exception:
-                mesh = try_make_watertight(mesh)
-                notes.append("watertight-fallback")
-        art = save_mesh_artifact(ctx, mesh, "repaired.stl", label="repaired")
-        return f"Repaired {src.name} → {art.name} ({', '.join(notes) or 'no-op'}). Faces={len(mesh.faces)}"
+        ok, qc = mesh_is_usable(src, min_vertices=32, min_faces=16)
+        if not ok:
+            return (
+                f"Cannot repair {src.name}: mesh is empty or too broken.\n{qc}\n"
+                "Do not call repair again. Retry images_to_mesh with ONE front photo and a new seed."
+            )
+        try:
+            mesh = load_mesh(src)
+            notes: list[str] = []
+            if keep_largest:
+                mesh = keep_largest_component(mesh, single=True)
+                notes.append("largest-component")
+            if remove_needles:
+                mesh = remove_needle_faces(mesh)
+                notes.append("needles")
+            if close_holes:
+                try:
+                    mesh = repair_with_pymeshlab(mesh, smooth_iters=0)
+                    notes.append("pymeshlab")
+                except Exception:
+                    mesh = try_make_watertight(mesh)
+                    notes.append("watertight-fallback")
+            art = save_mesh_artifact(ctx, mesh, "repaired.stl", label="repaired")
+            return f"Repaired {src.name} → {art.name} ({', '.join(notes) or 'no-op'}). Faces={len(mesh.faces)}"
+        except Exception as exc:
+            return (
+                f"Repair failed on {src.name}: {exc}. "
+                "If the mesh is empty, retry images_to_mesh with one front photo and a new seed."
+            )

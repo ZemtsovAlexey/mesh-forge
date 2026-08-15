@@ -200,10 +200,28 @@ def system_status(orch: Orchestrator) -> SystemStatus:
         )
         for item in snap.waiting
     ]
+    actives = [
+        GpuQueueEntry(
+            kind=item.kind,
+            label=item.label,
+            project_id=item.project_id,
+            position=item.position,
+        )
+        for item in (snap.actives or [])
+    ]
+    if not actives and active is not None:
+        actives = [active]
     return SystemStatus(
         services=services,
         status_text=orch.status_text(),
-        gpu=GpuQueueInfo(active=active, waiting=waiting),
+        gpu=GpuQueueInfo(
+            active=active,
+            waiting=waiting,
+            shared=bool(getattr(snap, "shared", True)),
+            actives=actives,
+            llm_host=getattr(snap, "llm_host", "") or "",
+            comfy_host=getattr(snap, "comfy_host", "") or "",
+        ),
     )
 
 

@@ -6,19 +6,57 @@ function cleanSummary(value: string): string {
   const text = value.trim();
   if (!text) return "";
   if (/^(none|null|undefined|ok|done)$/i.test(text)) return "";
-  return text;
+  return text.replace(/\s*knobs=\{[^}]*\}\s*$/, "").trim();
+}
+
+function promptFromArgs(args: Record<string, unknown> | undefined): string {
+  const prompt = args?.prompt;
+  return typeof prompt === "string" ? prompt.trim() : "";
+}
+
+function formatArgValue(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => {
+        if (item && typeof item === "object" && "ref" in item) {
+          const ref = String((item as { ref?: string }).ref || "");
+          const view = String((item as { view?: string }).view || "");
+          return view ? `${view}:${ref}` : ref;
+        }
+        return typeof item === "string" ? item : JSON.stringify(item);
+      })
+      .filter(Boolean)
+      .join(", ");
+  }
+  return JSON.stringify(value);
+}
+
+function extraKnobs(tool: ToolCall): [string, string][] {
+  const skip = new Set(["prompt", "raw"]);
+  const fromArgs = Object.entries(tool.args || {})
+    .filter(([key, value]) => !skip.has(key) && value != null && value !== "")
+    .map(([key, value]) => [key, formatArgValue(value)] as [string, string])
+    .filter(([, value]) => Boolean(value));
+  const fromEcho = Object.entries(tool.knobs || {})
+    .filter(([key]) => !fromArgs.some(([existing]) => existing === key))
+    .map(([key, value]) => [key, String(value)] as [string, string]);
+  return [...fromArgs, ...fromEcho];
 }
 
 export default function ToolCard({ tool }: { tool: ToolCall }) {
   const [open, setOpen] = useState(false);
-  const knobs =
-    tool.knobs && typeof tool.knobs === "object" && !Array.isArray(tool.knobs)
-      ? Object.entries(tool.knobs)
-      : [];
+  const knobs = extraKnobs(tool);
   const running = tool.status === "running";
   const percent = Math.min(100, Math.max(0, Math.round(tool.progress || 0)));
+  const prompt = promptFromArgs(tool.args);
   const summary = cleanSummary(tool.summary || "");
-  const hasDetails = knobs.length > 0 || Boolean(summary);
+  const preview = prompt || summary;
+  const hasDetails = knobs.length > 0 || Boolean(preview);
+  const longSummary = Boolean(prompt && summary && summary !== prompt);
   const statusText = running
     ? percent > 0
       ? `${percent}%`
@@ -45,18 +83,20 @@ export default function ToolCard({ tool }: { tool: ToolCall }) {
           <span style={{ width: `${percent > 0 ? percent : 14}%` }} />
         </div>
       ) : null}
-      {open && hasDetails ? (
+      {hasDetails ? (
         <div className="step-body">
+          {prompt ? <div className="step-prompt">{prompt}</div> : null}
           {knobs.length ? (
             <div className="knobs">
               {knobs.map(([k, v]) => (
                 <span className="knob" key={k}>
-                  {k}={String(v)}
+                  {k}={v}
                 </span>
               ))}
             </div>
           ) : null}
-          {summary ? <div>{summary}</div> : null}
+          {!prompt && summary ? <div className="step-note">{summary}</div> : null}
+          {open && longSummary ? <div className="step-note">{summary}</div> : null}
         </div>
       ) : null}
       <ArtifactBlock artifacts={tool.artifacts} />

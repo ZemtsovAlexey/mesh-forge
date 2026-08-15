@@ -27,6 +27,12 @@ class ToolCallRecord(BaseModel):
     artifacts: list[Artifact] = Field(default_factory=list)
 
 
+class MessageBlock(BaseModel):
+    kind: Literal["text", "tool"] = "text"
+    text: str = ""
+    tool_id: str = ""
+
+
 class UiMessage(BaseModel):
     id: str
     role: Literal["user", "assistant"]
@@ -35,6 +41,7 @@ class UiMessage(BaseModel):
     attachments: list[Artifact] = Field(default_factory=list)
     tools: list[ToolCallRecord] = Field(default_factory=list)
     artifacts: list[Artifact] = Field(default_factory=list)
+    blocks: list[MessageBlock] = Field(default_factory=list)
 
 
 class ChatMeta(BaseModel):

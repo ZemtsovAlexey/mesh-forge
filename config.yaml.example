@@ -14,7 +14,11 @@ gpu:
   vram_gb: 0
   # true = unload LM Studio / ComfyUI when the GPU slot switches kind (needed on 8GB).
   # false = FIFO queue only; both may stay loaded if VRAM allows.
+  # Ignored when services are on different hosts — there is no VRAM competition.
   sequential_models: true
+  # auto (omit) = one queue if llm and comfy hosts match, else independent queues.
+  # true = always one shared queue + unload. false = always two queues, no unload.
+  # shared_gpu: true
 comfyui:
   enabled: true
   base_url: http://127.0.0.1:8188

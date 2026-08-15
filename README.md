@@ -67,7 +67,7 @@ Checkpoint’ы:
 
 ## Конфиг
 
-Первый запуск создаёт `config.yaml`. Проверь `llm.*`, `comfyui.*`, `paths.projects`, `gpu.sequential_models` (по умолчанию выгружать LLM/Comfy при смене слота — для 8GB VRAM).
+Первый запуск создаёт `config.yaml`. Проверь `llm.*`, `comfyui.*`, `paths.projects`. `gpu.sequential_models` выгружает LLM/Comfy при смене слота — только если оба на одном хосте (для 8GB VRAM). Если `llm.base_url` и `comfyui.base_url` указывают на разные машины, очереди независимы и выгрузки нет. Принудительно: `gpu.shared_gpu: true|false`.
 
 ## Скрипты
 

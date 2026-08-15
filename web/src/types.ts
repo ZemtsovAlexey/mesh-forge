@@ -22,6 +22,12 @@ export type ToolCall = {
   artifacts: Artifact[];
 };
 
+export type MessageBlock = {
+  kind: "text" | "tool";
+  text?: string;
+  tool_id?: string;
+};
+
 export type ChatMessage = {
   id: string;
   role: "user" | "assistant";
@@ -30,6 +36,7 @@ export type ChatMessage = {
   attachments: Artifact[];
   tools: ToolCall[];
   artifacts: Artifact[];
+  blocks?: MessageBlock[];
 };
 
 export type ChatSummary = {
@@ -48,12 +55,23 @@ export type ChatDetail = {
   messages: ChatMessage[];
 };
 
+export type GpuQueueEntry = {
+  kind: string;
+  label: string;
+  project_id?: string | null;
+  position: number;
+};
+
 export type SystemStatus = {
   services: Record<string, boolean>;
   status_text: string;
   gpu: {
-    active: { kind: string; label: string; project_id?: string | null; position: number } | null;
-    waiting: { kind: string; label: string; project_id?: string | null; position: number }[];
+    active: GpuQueueEntry | null;
+    waiting: GpuQueueEntry[];
+    shared?: boolean;
+    actives?: GpuQueueEntry[];
+    llm_host?: string;
+    comfy_host?: string;
   };
 };
 

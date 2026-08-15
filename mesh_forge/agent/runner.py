@@ -13,6 +13,8 @@ from pydantic_ai.messages import (
     FunctionToolCallEvent,
     FunctionToolResultEvent,
     PartDeltaEvent,
+    PartStartEvent,
+    TextPart,
     TextPartDelta,
     ToolCallPart,
 )
@@ -20,13 +22,23 @@ from pydantic_ai.messages import (
 from mesh_forge import progress as prog
 from mesh_forge.agent.deps import ChatDeps
 from mesh_forge.agent.mesh_agent import build_agent
-from mesh_forge.chat.models import Artifact, ToolCallRecord, UiMessage
+from mesh_forge.agent.workspace import build_workspace_brief, is_followup, with_workspace
+from mesh_forge.chat.models import Artifact, MessageBlock, ToolCallRecord, UiMessage
 from mesh_forge.chat.store import ChatStore
 from mesh_forge.tools.base import tool_stage_label, tool_title
 
 logger = logging.getLogger("mesh_forge.agent.runner")
 
 _cancel_tokens: dict[str, CancellationToken] = {}
+_chat_locks: dict[str, asyncio.Lock] = {}
+
+
+def _chat_lock(chat_id: str) -> asyncio.Lock:
+    lock = _chat_locks.get(chat_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        lock = _chat_locks.setdefault(chat_id, lock)
+    return lock
 
 
 def request_stop(chat_id: str) -> None:
@@ -73,8 +85,31 @@ class ChatRunner:
         text: str,
         attachments: list[Artifact],
     ) -> AsyncIterator[str]:
-        meta = self.store.get_meta(chat_id)
-        self.store.maybe_set_title(chat_id, text)
+        lock = _chat_lock(chat_id)
+        while lock.locked():
+            yield _sse({"type": "status", "stage": "wait_turn"})
+            try:
+                await asyncio.wait_for(lock.acquire(), timeout=20)
+                break
+            except TimeoutError:
+                continue
+        else:
+            await lock.acquire()
+        try:
+            async for chunk in self._stream_turn(chat_id, text, attachments):
+                yield chunk
+        finally:
+            lock.release()
+
+    async def _stream_turn(
+        self,
+        chat_id: str,
+        text: str,
+        attachments: list[Artifact],
+    ) -> AsyncIterator[str]:
+        self.store.get_meta(chat_id)
+        if not is_followup(text):
+            self.store.maybe_set_title(chat_id, text)
         messages = self.store.load_messages(chat_id)
         user_msg = UiMessage(
             id=uuid.uuid4().hex[:10],
@@ -114,6 +149,7 @@ class ChatRunner:
         if attachments:
             bits = ", ".join(f"{a.kind}:{a.id}" for a in attachments)
             prompt = f"{prompt}\n\nAttached this turn: {bits}"
+        prompt = with_workspace(prompt, build_workspace_brief(self.store, chat_id, attachments))
 
         history = self.store.load_agent_messages(chat_id)
 
@@ -138,10 +174,6 @@ class ChatRunner:
                                     self.store.save_agent_messages(chat_id, all_msgs)
                                 except Exception:
                                     logger.exception("failed to persist agent messages")
-                                output = getattr(result, "output", None)
-                                if isinstance(output, str) and output.strip():
-                                    await bus.put({"type": "text_delta", "delta": ""})
-                                    assistant_msg.content = output
                 await bus.put({"type": "done"})
             except Exception as exc:
                 logger.exception("agent run failed")
@@ -150,6 +182,13 @@ class ChatRunner:
 
         task = asyncio.create_task(run_agent())
         tools_by_id: dict[str, ToolCallRecord] = {}
+
+        def persist() -> None:
+            try:
+                self.store.save_messages(chat_id, messages)
+            except Exception:
+                logger.exception("failed to persist ui messages")
+
         try:
             while True:
                 try:
@@ -157,16 +196,20 @@ class ChatRunner:
                 except TimeoutError:
                     state = prog.get(chat_id)
                     if state and state.active:
-                        tool_name = assistant_msg.tools[-1].name if assistant_msg.tools else state.operation
-                        yield _sse(
-                            {
-                                "type": "tool_progress",
-                                "percent": state.percent,
-                                "stage": tool_stage_label(tool_name, state.stage),
-                            }
-                        )
+                        last = assistant_msg.tools[-1] if assistant_msg.tools else None
+                        if last is None or last.status == "running":
+                            tool_name = last.name if last else state.operation
+                            yield _sse(
+                                {
+                                    "type": "tool_progress",
+                                    "percent": state.percent,
+                                    "stage": tool_stage_label(tool_name, state.stage),
+                                }
+                            )
                     continue
                 etype = event.get("type")
+                dirty = False
+                followup: list[dict[str, Any]] = []
                 if etype == "tool_start":
                     name = str(event.get("name") or "tool")
                     record = ToolCallRecord(
@@ -178,21 +221,30 @@ class ChatRunner:
                     )
                     tools_by_id[record.id] = record
                     assistant_msg.tools.append(record)
+                    _append_tool_block(assistant_msg, record.id)
                     event["id"] = record.id
                     event["title"] = record.title
+                    prog.start(chat_id, name, "")
+                    dirty = True
                 elif etype == "tool_end":
                     rec = tools_by_id.get(event.get("id") or "")
                     if rec is None and assistant_msg.tools:
                         rec = assistant_msg.tools[-1]
                     if rec is not None:
                         rec.status = "error" if event.get("ok") is False else "ok"
-                        rec.summary = str(event.get("summary") or "")[:800]
+                        rec.summary = str(event.get("summary") or "")[:2000]
                         knobs = _extract_knobs(rec.summary)
                         if knobs:
                             rec.knobs = knobs
+                            event["knobs"] = knobs
+                    dirty = True
                 elif etype == "tool_progress":
+                    rec = None
                     if assistant_msg.tools:
-                        rec = assistant_msg.tools[-1]
+                        last = assistant_msg.tools[-1]
+                        if last.status == "running":
+                            rec = last
+                    if rec is not None:
                         rec.progress = float(event.get("percent") or rec.progress)
                         rec.stage = tool_stage_label(rec.name, str(event.get("stage") or rec.stage))
                         event["stage"] = rec.stage
@@ -213,12 +265,24 @@ class ChatRunner:
                             assistant_msg.tools[-1].artifacts.append(art)
                         else:
                             assistant_msg.artifacts.append(art)
+                    dirty = True
                 elif etype == "text_delta":
-                    assistant_msg.content += str(event.get("delta") or "")
+                    _append_text(assistant_msg, str(event.get("delta") or ""))
                 elif etype == "error":
                     if not assistant_msg.content:
                         assistant_msg.content = str(event.get("message") or "Ошибка")
+                    still = [rec for rec in assistant_msg.tools if rec.status == "running"]
+                    _fail_running_tools(assistant_msg.tools, str(event.get("message") or "Ошибка"))
+                    for rec in still:
+                        followup.append(
+                            {"type": "tool_end", "id": rec.id, "ok": False, "summary": rec.summary}
+                        )
+                    dirty = True
+                if dirty:
+                    persist()
                 yield _sse(event)
+                for item in followup:
+                    yield _sse(item)
                 if etype == "done":
                     break
         finally:
@@ -229,8 +293,34 @@ class ChatRunner:
                 await task
             except Exception:
                 pass
+            still = [rec for rec in assistant_msg.tools if rec.status == "running"]
+            _fail_running_tools(assistant_msg.tools, "Прервано")
+            for rec in still:
+                yield _sse({"type": "tool_end", "id": rec.id, "ok": False, "summary": rec.summary})
             prog.finish(chat_id, ok=True)
-            self.store.save_messages(chat_id, messages)
+            persist()
+
+
+def _append_text(message: UiMessage, delta: str) -> None:
+    if not delta:
+        return
+    message.content += delta
+    if message.blocks and message.blocks[-1].kind == "text":
+        message.blocks[-1].text += delta
+    else:
+        message.blocks.append(MessageBlock(kind="text", text=delta))
+
+
+def _append_tool_block(message: UiMessage, tool_id: str) -> None:
+    message.blocks.append(MessageBlock(kind="tool", tool_id=tool_id))
+
+
+def _fail_running_tools(tools: list[ToolCallRecord], message: str) -> None:
+    note = (message or "Ошибка").strip()[:2000]
+    for rec in tools:
+        if rec.status == "running":
+            rec.status = "error"
+            rec.summary = rec.summary or note
 
 
 def _extract_knobs(summary: str) -> dict[str, Any]:
@@ -247,36 +337,65 @@ def _extract_knobs(summary: str) -> dict[str, Any]:
         return {}
 
 
-def _map_agent_event(event: object) -> dict[str, Any] | None:
-    if isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
-        delta = event.delta.content_delta or ""
-        if delta:
-            return {"type": "text_delta", "delta": delta}
-        return None
-    if isinstance(event, FunctionToolCallEvent):
-        part = event.part
-        name = getattr(part, "tool_name", "") if part else ""
-        args = getattr(part, "args", {}) if part else {}
-        if isinstance(args, str):
+def _tool_return_text(event: FunctionToolResultEvent) -> tuple[str, str]:
+    """Tool output lives on result/part, not event.content (that's optional extra user text)."""
+    result = getattr(event, "result", None)
+    if result is None:
+        result = getattr(event, "part", None)
+    call_id = str(getattr(event, "tool_call_id", "") or "")
+    if result is not None:
+        call_id = call_id or str(getattr(result, "tool_call_id", "") or getattr(result, "id", "") or "")
+        raw = getattr(result, "content", None)
+        if isinstance(raw, str) and raw.strip():
+            return call_id, raw.strip()
+        getter = getattr(result, "model_response_str", None)
+        if callable(getter):
             try:
-                args = json.loads(args)
+                text = getter()
+                if isinstance(text, str) and text.strip():
+                    return call_id, text.strip()
             except Exception:
-                args = {"raw": args}
-        call_id = getattr(part, "tool_call_id", None) or getattr(part, "id", None) or uuid.uuid4().hex[:8]
-        return {"type": "tool_start", "id": call_id, "name": name, "args": args or {}}
-    if isinstance(event, FunctionToolResultEvent):
-        part = event.part
-        call_id = getattr(part, "tool_call_id", None) or getattr(part, "id", None) or ""
-        content = event.content
-        if not isinstance(content, str):
-            content = str(content)
-        ok = not content.lower().startswith("error")
-        return {"type": "tool_end", "id": call_id, "ok": ok, "summary": content[:1200]}
-    if isinstance(event, ToolCallPart):
-        return {
-            "type": "tool_start",
-            "id": event.tool_call_id or event.id or uuid.uuid4().hex[:8],
-            "name": event.tool_name,
-            "args": event.args if isinstance(event.args, dict) else {},
-        }
-    return None
+                pass
+        if raw is not None:
+            return call_id, str(raw).strip()
+    return call_id, ""
+
+
+def _map_agent_event(event: object) -> dict[str, Any] | None:
+    try:
+        if isinstance(event, PartStartEvent) and isinstance(event.part, TextPart):
+            text = event.part.content or ""
+            if text:
+                return {"type": "text_delta", "delta": text}
+            return None
+        if isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
+            delta = event.delta.content_delta or ""
+            if delta:
+                return {"type": "text_delta", "delta": delta}
+            return None
+        if isinstance(event, FunctionToolCallEvent):
+            part = event.part
+            name = getattr(part, "tool_name", "") if part else ""
+            args = getattr(part, "args", {}) if part else {}
+            if isinstance(args, str):
+                try:
+                    args = json.loads(args)
+                except Exception:
+                    args = {"raw": args}
+            call_id = getattr(part, "tool_call_id", None) or getattr(part, "id", None) or uuid.uuid4().hex[:8]
+            return {"type": "tool_start", "id": call_id, "name": name, "args": args or {}}
+        if isinstance(event, FunctionToolResultEvent):
+            call_id, content = _tool_return_text(event)
+            ok = bool(content) and not content.lower().startswith("error")
+            return {"type": "tool_end", "id": call_id, "ok": ok, "summary": content[:2000]}
+        if isinstance(event, ToolCallPart):
+            return {
+                "type": "tool_start",
+                "id": event.tool_call_id or event.id or uuid.uuid4().hex[:8],
+                "name": event.tool_name,
+                "args": event.args if isinstance(event.args, dict) else {},
+            }
+        return None
+    except Exception:
+        logger.exception("failed to map agent event %s", type(event).__name__)
+        return None

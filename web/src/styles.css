@@ -260,6 +260,18 @@ button { cursor: pointer; }
 .step-mark.error { color: var(--danger); }
 @keyframes spin { to { transform: rotate(360deg); } }
 .step-body { padding: 0 2px 8px 22px; font-size: 12.5px; color: var(--muted); }
+.step-prompt {
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.45;
+  margin: 2px 0 6px;
+  white-space: pre-wrap;
+}
+.step-note {
+  line-height: 1.5;
+  white-space: pre-wrap;
+  margin: 4px 0 2px;
+}
 .knobs { display: flex; flex-wrap: wrap; gap: 6px; margin: 4px 0 8px; }
 .knob {
   background: var(--bg-elev);

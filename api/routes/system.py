@@ -5,6 +5,8 @@ from fastapi import APIRouter, HTTPException, Query
 from api.deps import get_runner
 from api.schemas import (
     GenerationDefaults,
+    GpuQueueEntry,
+    GpuQueueInfo,
     LLMModelsResponse,
     LLMSettings,
     LLMSettingsUpdate,
@@ -24,34 +26,38 @@ from mesh_forge.runtime import get_gpu_scheduler
 router = APIRouter(prefix="/api", tags=["system"])
 
 
-def _system_status() -> SystemStatus:
-    cfg = load_config()
-    llm = LMStudioClient(cfg)
-    comfy = ComfyUiClient()
-    services = {"lmstudio": llm.health_check(), "comfyui": comfy.health_check()}
+def _gpu_queue_info() -> GpuQueueInfo:
     snap = get_gpu_scheduler().snapshot()
-    from api.schemas import GpuQueueEntry, GpuQueueInfo
 
-    active = None
-    if snap.active is not None:
-        active = GpuQueueEntry(
-            kind=snap.active.kind,
-            label=snap.active.label,
-            project_id=snap.active.project_id,
-            position=snap.active.position,
-        )
-    waiting = [
-        GpuQueueEntry(
+    def _entry(item) -> GpuQueueEntry:
+        return GpuQueueEntry(
             kind=item.kind,
             label=item.label,
             project_id=item.project_id,
             position=item.position,
         )
-        for item in snap.waiting
-    ]
+
+    actives = [_entry(item) for item in (snap.actives or [])]
+    if not actives and snap.active is not None:
+        actives = [_entry(snap.active)]
+    return GpuQueueInfo(
+        active=actives[0] if actives else None,
+        waiting=[_entry(item) for item in snap.waiting],
+        shared=bool(snap.shared),
+        actives=actives,
+        llm_host=getattr(snap, "llm_host", "") or "",
+        comfy_host=getattr(snap, "comfy_host", "") or "",
+    )
+
+
+def _system_status() -> SystemStatus:
+    cfg = load_config()
+    llm = LMStudioClient(cfg)
+    comfy = ComfyUiClient()
+    services = {"lmstudio": llm.health_check(), "comfyui": comfy.health_check()}
     lines = [f"{k}: {'OK' if v else 'missing'}" for k, v in services.items()]
     lines.append(get_gpu_scheduler().status_text())
-    return SystemStatus(services=services, status_text="\n".join(lines), gpu=GpuQueueInfo(active=active, waiting=waiting))
+    return SystemStatus(services=services, status_text="\n".join(lines), gpu=_gpu_queue_info())
 
 
 @router.get("/status", response_model=SystemStatus)

@@ -2,12 +2,50 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
-from mesh_forge.config import load_config
+from mesh_forge.config import AppConfig, load_config
 
 logger = logging.getLogger("mesh_forge.gpu")
+
+_LOOPBACK_HOSTS = frozenset(
+    {"localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]", "::"}
+)
+
+
+def service_host_key(url: str) -> str:
+    """Normalize a service URL to a host identity (loopback → 'local')."""
+    text = (url or "").strip()
+    if not text:
+        return ""
+    if "://" not in text:
+        text = f"http://{text}"
+    host = (urlparse(text).hostname or "").strip().lower().rstrip(".")
+    if not host or host in _LOOPBACK_HOSTS:
+        return "local"
+    return host
+
+
+def gpu_hosts_shared(llm_url: str, comfy_url: str) -> bool:
+    """True when LM Studio and ComfyUI look like the same machine."""
+    llm_host = service_host_key(llm_url)
+    comfy_host = service_host_key(comfy_url)
+    if not llm_host or not comfy_host:
+        return True
+    return llm_host == comfy_host
+
+
+def queues_are_split(config: AppConfig | None = None) -> bool:
+    """Independent GPU queues when the two services do not share a host."""
+    cfg = config or load_config()
+    override = cfg.gpu.shared_gpu
+    if override is True:
+        return False
+    if override is False:
+        return True
+    return not gpu_hosts_shared(cfg.llm.base_url, cfg.comfyui.base_url)
 
 
 def switch_vram(from_kind: str, to_kind: str) -> None:
@@ -20,6 +58,13 @@ def switch_vram(from_kind: str, to_kind: str) -> None:
         logger.warning("VRAM handoff skipped (config): %s", exc)
         return
     if not config.gpu.sequential_models:
+        return
+    if queues_are_split(config):
+        logger.info(
+            "VRAM handoff skipped: LM Studio (%s) and ComfyUI (%s) are on different hosts",
+            service_host_key(config.llm.base_url) or config.llm.base_url,
+            service_host_key(config.comfyui.base_url) or config.comfyui.base_url,
+        )
         return
     if from_kind == "comfy":
         _free_comfyui(config.comfyui.base_url)

@@ -48,6 +48,8 @@ class ServerConfig:
 class GPUConfig:
     vram_gb: int = 0
     sequential_models: bool = True
+    # None = auto from llm/comfy hosts; True = one queue; False = two queues, no unload
+    shared_gpu: bool | None = None
 
 
 @dataclass
@@ -188,12 +190,17 @@ def load_config(path: Path | None = None) -> AppConfig:
     paths_raw = dict(data.get("paths") or {})
     known_paths = set(PathsConfig.__dataclass_fields__)
     paths_raw = {k: v for k, v in paths_raw.items() if k in known_paths}
+    gpu_raw = dict(data.get("gpu") or {})
+    known_gpu = set(GPUConfig.__dataclass_fields__)
+    gpu_raw = {k: v for k, v in gpu_raw.items() if k in known_gpu}
+    if str(gpu_raw.get("shared_gpu") or "").strip().lower() == "auto":
+        gpu_raw["shared_gpu"] = None
 
     return AppConfig(
         llm=LLMConfig(**(data.get("llm") or {})),
         paths=PathsConfig(**paths_raw),
         server=ServerConfig(**(data.get("server") or {})),
-        gpu=GPUConfig(**(data.get("gpu") or {})),
+        gpu=GPUConfig(**gpu_raw),
         comfyui=ComfyUIConfig(**comfy_raw),
         photo=PhotoConfig(**photo_raw),
         config_path=cfg_path,
@@ -229,10 +236,13 @@ def save_config(config: AppConfig) -> Path:
         "host": config.server.host,
         "port": config.server.port,
     }
-    data["gpu"] = {
+    gpu_data: dict[str, Any] = {
         "vram_gb": config.gpu.vram_gb,
         "sequential_models": config.gpu.sequential_models,
     }
+    if config.gpu.shared_gpu is not None:
+        gpu_data["shared_gpu"] = config.gpu.shared_gpu
+    data["gpu"] = gpu_data
     data.pop("docker", None)
     data["comfyui"] = {
         "enabled": config.comfyui.enabled,

@@ -8,6 +8,8 @@ from pydantic_ai import RunContext
 from mesh_forge.adapters import ComfyUiClient
 from mesh_forge.agent.deps import ChatDeps
 from mesh_forge.domain import ImageArtifact, ImageSet
+from mesh_forge.mesh_qc import mesh_is_usable
+from mesh_forge.ops.geometry import load_mesh, save_mesh
 from mesh_forge.tools.base import MeshTool
 from mesh_forge.tools.knobs import MeshGenKnobs, ViewName, apply_mesh_knobs
 
@@ -35,9 +37,11 @@ class ImagesToMesh(MeshTool):
 
         Pass explicit refs. If images is empty, use this-turn photo attachments only (not chat history).
         1 image → single-view Hunyuan. 2–4 → multiview with ONLY provided slots (no front-padding).
+        Several generate_image fronts are NOT left/back/right — use one photo, or generate_views for a real orbit.
         >4: first 4 used, rest reported as dropped. Label views after look if you know front/left/back/right.
 
-        Bad mesh → quality=quality or higher steps, then retry. Redo → new seed.
+        Empty mesh (0 verts) is a failed reconstruction, not a hole. Do not repair. Retry with one front photo and a new seed.
+        Bad mesh with actual geometry → quality=quality or higher steps, then retry. Redo → new seed.
         """
         from mesh_forge import progress as prog
 
@@ -67,12 +71,25 @@ class ImagesToMesh(MeshTool):
             seed=echo["seed"],
         )
         dest = ctx.deps.store.new_file(ctx.deps.chat_id, "mesh.stl")
-        dest.write_bytes(mesh.path.read_bytes())
+        try:
+            save_mesh(load_mesh(mesh.path), dest)
+        except Exception as exc:
+            return (
+                f"ERROR: Hunyuan wrote {mesh.path.name}, but it could not be converted to STL: {exc}. "
+                "Retry images_to_mesh with ONE front photo and a new seed."
+            )
+        ok, qc = mesh_is_usable(dest)
+        views = ", ".join(f"{label}={path.name}" for label, path in picked)
+        drop_note = f" Dropped extra: {dropped}." if dropped else ""
+        if not ok:
+            return (
+                f"ERROR: Hunyuan produced an empty/invalid mesh ({dest.name}) from {len(picked)} image(s): {views}."
+                f"{drop_note} {qc} Do not repair. Retry images_to_mesh with ONE front photo "
+                f"(not several generate_image fronts as left/back/right) and a new seed. knobs={echo}"
+            )
         ctx.deps.store.set_current_mesh(ctx.deps.chat_id, dest)
         art = ctx.deps.store.artifact_from_path(ctx.deps.chat_id, dest, label="mesh")
         ctx.deps.emit_artifact(art)
-        drop_note = f" Dropped extra: {dropped}." if dropped else ""
-        views = ", ".join(f"{label}={path.name}" for label, path in picked)
         return f"Mesh {art.name} from {len(picked)} image(s): {views}.{drop_note} knobs={echo}"
 
 
@@ -83,8 +100,14 @@ def _pick_images(
     labels = ("front", "left", "back", "right")
     selected: list[tuple[str, Path]] = []
     dropped: list[str] = []
-    if images:
-        for item in images:
+    wanted = list(images or [])
+    if wanted:
+        views = [(item.view or "").strip().lower() for item in wanted]
+        labeled = [v for v in views if v]
+        if len(wanted) > 1 and labeled and len(set(labeled)) == 1:
+            dropped.extend(item.ref for item in wanted[:-1])
+            wanted = wanted[-1:]
+        for item in wanted:
             try:
                 path = ctx.deps.store.resolve_ref(ctx.deps.chat_id, item.ref)
             except FileNotFoundError:
@@ -95,6 +118,10 @@ def _pick_images(
         photos = [a for a in ctx.deps.attachments if a.kind == "image"]
         for art in photos:
             selected.append(("", ctx.deps.store.resolve_file(ctx.deps.chat_id, art.name)))
+    if len(selected) > 1 and all("_front" in path.name.lower() for _, path in selected):
+        dropped.extend(path.name for _, path in selected[:-1])
+        last_label, last_path = selected[-1]
+        selected = [(last_label or "front", last_path)]
     if len(selected) > 4:
         dropped.extend(name for _, p in selected[4:] for name in [p.name])
         selected = selected[:4]

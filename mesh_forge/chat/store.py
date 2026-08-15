@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import uuid
 from datetime import datetime, timezone
@@ -9,6 +10,8 @@ from typing import Any
 
 from mesh_forge.chat.models import Artifact, ChatMeta, ChatSummary, UiMessage
 from mesh_forge.config import load_config
+
+logger = logging.getLogger("mesh_forge.chat.store")
 
 _SAFE_NAME = re.compile(r"[^a-zA-Z0-9._-]+")
 
@@ -128,6 +131,7 @@ class ChatStore:
 
             return list(ModelMessagesTypeAdapter.validate_json(path.read_bytes()))
         except Exception:
+            logger.exception("failed to load agent messages for %s", chat_id)
             return []
 
     def save_agent_messages(self, chat_id: str, messages: list[Any]) -> None:
