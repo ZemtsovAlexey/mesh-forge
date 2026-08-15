@@ -5,7 +5,7 @@ from pydantic_ai import RunContext
 from mesh_forge.adapters import ComfyUiClient
 from mesh_forge.agent.deps import ChatDeps
 from mesh_forge.tools.base import MeshTool
-from mesh_forge.tools.common import save_image_artifact
+from mesh_forge.tools.common import reply_image_id, save_image_artifact
 from mesh_forge.tools.knobs import ImageKnobs, ViewName, apply_image_knobs
 
 
@@ -24,23 +24,23 @@ class GenerateViews(MeshTool):
         steps: int | None = None,
         cfg: float | None = None,
         style: str | None = None,
-        denoise: float | None = None,
     ) -> str:
         """Generate named views. views defaults to front,left,back,right — pass a subset if you only need some.
 
-        If ref_image is set (artifact id), orbit from that front. Else text→views.
-        denoise: lower = closer to front (less drift). Redo → new seed.
+        If ref_image is set (artifact id), Zero123 orbits from that front.
+        If omitted, uses the image the user replied to (front if present). Else text→front, then Zero123.
+        Redo → new seed.
         """
         from mesh_forge import progress as prog
 
         wanted = views or ["front", "left", "back", "right"]
+        ref_image = (ref_image or "").strip() or reply_image_id(ctx)
         knobs = ImageKnobs(
             seed=seed,
             quality=quality if quality in {"draft", "quality"} else None,
             steps=steps,
             cfg=cfg,
             style=style if style in {"clay", "color"} else None,
-            denoise=denoise,
         )
         cfg_obj, echo = apply_image_knobs(knobs)
         client = ComfyUiClient()

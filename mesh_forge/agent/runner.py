@@ -22,7 +22,13 @@ from pydantic_ai.messages import (
 from mesh_forge import progress as prog
 from mesh_forge.agent.deps import ChatDeps
 from mesh_forge.agent.mesh_agent import build_agent
-from mesh_forge.agent.workspace import build_workspace_brief, is_followup, with_workspace
+from mesh_forge.agent.workspace import (
+    build_workspace_brief,
+    cited_artifacts,
+    format_reply_prompt,
+    is_followup,
+    with_workspace,
+)
 from mesh_forge.chat.models import Artifact, MessageBlock, ToolCallRecord, UiMessage
 from mesh_forge.chat.store import ChatStore
 from mesh_forge.tools.base import tool_stage_label, tool_title
@@ -84,6 +90,8 @@ class ChatRunner:
         chat_id: str,
         text: str,
         attachments: list[Artifact],
+        reply_to: str = "",
+        reply_artifact_ids: list[str] | None = None,
     ) -> AsyncIterator[str]:
         lock = _chat_lock(chat_id)
         while lock.locked():
@@ -96,7 +104,13 @@ class ChatRunner:
         else:
             await lock.acquire()
         try:
-            async for chunk in self._stream_turn(chat_id, text, attachments):
+            async for chunk in self._stream_turn(
+                chat_id,
+                text,
+                attachments,
+                reply_to=reply_to,
+                reply_artifact_ids=reply_artifact_ids,
+            ):
                 yield chunk
         finally:
             lock.release()
@@ -106,17 +120,23 @@ class ChatRunner:
         chat_id: str,
         text: str,
         attachments: list[Artifact],
+        reply_to: str = "",
+        reply_artifact_ids: list[str] | None = None,
     ) -> AsyncIterator[str]:
         self.store.get_meta(chat_id)
         if not is_followup(text):
             self.store.maybe_set_title(chat_id, text)
         messages = self.store.load_messages(chat_id)
+        reply_ids = [str(x).strip() for x in (reply_artifact_ids or []) if str(x).strip()]
+        cited = cited_artifacts(messages, reply_to, reply_ids)
         user_msg = UiMessage(
             id=uuid.uuid4().hex[:10],
             role="user",
             content=text,
             created_at=_now(),
             attachments=attachments,
+            reply_to=(reply_to or "").strip(),
+            reply_artifact_ids=reply_ids,
         )
         assistant_msg = UiMessage(
             id=uuid.uuid4().hex[:10],
@@ -141,6 +161,7 @@ class ChatRunner:
             chat_id=chat_id,
             store=self.store,
             attachments=attachments,
+            reply_artifacts=cited,
             emit=bus.put_nowait,
             loop=loop,
         )
@@ -149,7 +170,12 @@ class ChatRunner:
         if attachments:
             bits = ", ".join(f"{a.kind}:{a.id}" for a in attachments)
             prompt = f"{prompt}\n\nAttached this turn: {bits}"
-        prompt = with_workspace(prompt, build_workspace_brief(self.store, chat_id, attachments))
+        if cited:
+            prompt = f"{prompt}\n\n{format_reply_prompt(cited, (reply_to or '').strip())}"
+        prompt = with_workspace(
+            prompt,
+            build_workspace_brief(self.store, chat_id, attachments, reply_artifacts=cited),
+        )
 
         history = self.store.load_agent_messages(chat_id)
 

@@ -75,6 +75,7 @@ data["gpu"] = gpu
 comfy = dict(data.get("comfyui") or {})
 comfy["enabled"] = comfy.get("enabled", True)
 comfy["base_url"] = str(comfy.get("base_url") or "http://127.0.0.1:8188").rstrip("/")
+comfy["view_consistency"] = "zero123"
 if not comfy.get("install_dir") and os.environ.get("MF_COMFY_ROOT"):
     comfy["install_dir"] = Path(os.environ["MF_COMFY_ROOT"]).as_posix()
 data["comfyui"] = comfy

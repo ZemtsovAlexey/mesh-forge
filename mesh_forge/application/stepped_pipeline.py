@@ -261,7 +261,7 @@ def continue_to_views(manifest: ProjectManifest) -> PipelineRunState:
             path = copy_into(work / "views", art.path, f"{label}.png")
             stored[label] = path
         bad = [label for label, path in stored.items() if label != "front" and not _clay_ok(path)]
-        # mode=off: only front — still ok
+        # mode=off removed: orbits are always Zero123
         state.step = "views"
         state.status = "ready"
         state.quality_ok = not bad

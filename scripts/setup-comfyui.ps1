@@ -171,6 +171,10 @@ if (-not $SkipCheckpoints) {
         @{
             Name = "hunyuan3d-dit-v2-mv-turbo_fp16.safetensors"
             Url  = "https://huggingface.co/Comfy-Org/hunyuan3D_2.0_repackaged/resolve/main/split_files/hunyuan3d-dit-v2-mv-turbo_fp16.safetensors"
+        },
+        @{
+            Name = "stable_zero123.ckpt"
+            Url  = "https://huggingface.co/stabilityai/stable-zero123/resolve/main/stable_zero123.ckpt"
         }
     )
     if ($QualityModels) {

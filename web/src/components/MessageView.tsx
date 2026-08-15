@@ -1,4 +1,5 @@
-import type { ChatMessage, ToolCall } from "../types";
+import type { Artifact, ChatMessage, ReplyTarget, ToolCall } from "../types";
+import { makeReplyTarget } from "../reply";
 import ArtifactBlock from "./ArtifactBlock";
 import ToolCard from "./ToolCard";
 
@@ -33,10 +34,14 @@ function timeline(message: ChatMessage): Array<{ kind: "text"; text: string } | 
 
 export default function MessageView({
   message,
+  quoted,
   pending = false,
+  onReply,
 }: {
   message: ChatMessage;
+  quoted?: string;
   pending?: boolean;
+  onReply?: (target: ReplyTarget) => void;
 }) {
   const items = timeline(message);
   const hasBody = Boolean(
@@ -47,10 +52,15 @@ export default function MessageView({
   if (!hasBody && !pending) return null;
 
   const thinking = pending && !items.length;
+  const canReply = Boolean(onReply) && !pending && Boolean(message.id) && !message.id.startsWith("tmp-") && !message.id.startsWith("u-");
+  const replyArt = (art: Artifact) => onReply?.(makeReplyTarget(message, art));
+  const replyMsg = () => onReply?.(makeReplyTarget(message));
+
   if (message.role === "user") {
     return (
       <article className="msg user">
         <div className="user-col">
+          {quoted ? <div className="user-quote">Ответ на {quoted}</div> : null}
           {message.attachments?.length ? <ArtifactBlock artifacts={message.attachments} /> : null}
           {message.content ? <div className="user-text">{message.content}</div> : null}
         </div>
@@ -62,7 +72,9 @@ export default function MessageView({
     <article className="msg assistant">
       <div className="mark" aria-hidden />
       <div className="bubble">
-        {message.attachments?.length ? <ArtifactBlock artifacts={message.attachments} /> : null}
+        {message.attachments?.length ? (
+          <ArtifactBlock artifacts={message.attachments} onReply={canReply ? replyArt : undefined} />
+        ) : null}
         {thinking ? (
           <div className="thinking">
             <span className="thinking-dots" aria-hidden>
@@ -80,11 +92,20 @@ export default function MessageView({
             </div>
           ) : (
             <div className="steps" key={item.tool.id}>
-              <ToolCard tool={item.tool} />
+              <ToolCard tool={item.tool} onReply={canReply ? replyArt : undefined} />
             </div>
           ),
         )}
-        {message.artifacts?.length ? <ArtifactBlock artifacts={message.artifacts} /> : null}
+        {message.artifacts?.length ? (
+          <ArtifactBlock artifacts={message.artifacts} onReply={canReply ? replyArt : undefined} />
+        ) : null}
+        {canReply ? (
+          <div className="msg-bar">
+            <button type="button" className="reply-link" onClick={replyMsg}>
+              Ответить
+            </button>
+          </div>
+        ) : null}
       </div>
     </article>
   );

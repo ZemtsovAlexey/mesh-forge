@@ -63,8 +63,8 @@ class ComfyUIConfig:
     install_dir: str = ""
     # draft = turbo models (fast); quality = full MV + SDXL base (slower, cleaner)
     quality_preset: str = "draft"
-    # img2img | zero123 | off — how left/back/right views are produced from the front
-    view_consistency: str = "img2img"
+    # Orbits are always Zero123. Kept for config.yaml compat; ignored if not zero123.
+    view_consistency: str = "zero123"
     # clay = matte white studio (best for mesh); color = painted / colored product views
     view_style: str = "clay"
     checkpoint: str = "sd_xl_turbo_1.0_fp16.safetensors"
@@ -77,7 +77,7 @@ class ComfyUIConfig:
     steps: int = 8
     cfg: float = 1.5
     view_count: int = 4
-    # img2img orbit strength (side views from front)
+    # unused for orbits (Zero123); kept so old config.yaml still loads
     view_denoise: float = 0.58
     view_denoise_turbo: float = 0.72
     # guided edit: how strongly to change the anchor front (keep low to preserve identity)
@@ -139,11 +139,6 @@ class AppConfig:
         return Path(raw)
 
     @property
-    def comfyui_text_to_multiview_workflow_path(self) -> Path:
-        raw = self.comfyui.text_to_multiview_workflow or str(ROOT / "mesh_forge" / "workflows" / "text_to_multiview.json")
-        return Path(raw)
-
-    @property
     def comfyui_multiview_to_mesh_workflow_path(self) -> Path:
         raw = self.comfyui.multiview_to_mesh_workflow or str(ROOT / "mesh_forge" / "workflows" / "multiview_to_mesh.json")
         return Path(raw)
@@ -163,7 +158,7 @@ class AppConfig:
 
     @property
     def comfyui_guided_edit_workflow_path(self) -> Path:
-        return ROOT / "mesh_forge" / "workflows" / "guided_edit_multiview.json"
+        return ROOT / "mesh_forge" / "workflows" / "guided_edit_front.json"
 
     def resolve(self, key: str) -> Path | None:
         value = getattr(self.paths, key, "") or ""
@@ -185,6 +180,8 @@ def load_config(path: Path | None = None) -> AppConfig:
     comfy_raw = dict(data.get("comfyui") or {})
     known_comfy = set(ComfyUIConfig.__dataclass_fields__)
     comfy_raw = {k: v for k, v in comfy_raw.items() if k in known_comfy}
+    if str(comfy_raw.get("view_consistency") or "").strip().lower() != "zero123":
+        comfy_raw["view_consistency"] = "zero123"
     known_photo = set(PhotoConfig.__dataclass_fields__)
     photo_raw = {k: v for k, v in photo_raw.items() if k in known_photo}
     paths_raw = dict(data.get("paths") or {})
@@ -249,11 +246,11 @@ def save_config(config: AppConfig) -> Path:
         "base_url": config.comfyui.base_url,
         "install_dir": config.comfyui.install_dir,
         "workflow": config.comfyui.workflow or str(config.comfyui_workflow_path),
-        "text_to_multiview_workflow": config.comfyui.text_to_multiview_workflow or str(config.comfyui_text_to_multiview_workflow_path),
+        "text_to_multiview_workflow": config.comfyui.text_to_multiview_workflow,
         "multiview_to_mesh_workflow": config.comfyui.multiview_to_mesh_workflow or str(config.comfyui_multiview_to_mesh_workflow_path),
         "image_to_mesh_workflow": config.comfyui.image_to_mesh_workflow or str(config.comfyui_image_to_mesh_workflow_path),
         "quality_preset": config.comfyui.quality_preset,
-        "view_consistency": config.comfyui.view_consistency,
+        "view_consistency": "zero123",
         "view_style": config.comfyui.view_style,
         "checkpoint": config.comfyui.checkpoint,
         "mesh_checkpoint": config.comfyui.mesh_checkpoint,
@@ -301,6 +298,38 @@ def save_config(config: AppConfig) -> Path:
     with cfg_path.open("w", encoding="utf-8") as f:
         yaml.safe_dump(data, f, allow_unicode=True, sort_keys=False, default_flow_style=False)
     return cfg_path
+
+
+def normalize_comfyui_base_url(url: str | None) -> str:
+    text = (url or "").strip().rstrip("/")
+    if not text:
+        text = "http://127.0.0.1:8188"
+    if "://" not in text:
+        text = f"http://{text}"
+    return text
+
+
+def comfyui_is_local(config: AppConfig | None = None) -> bool:
+    """True when ComfyUI is on this machine (loopback). Remote hosts keep their own checkpoints."""
+    from urllib.parse import urlparse
+
+    cfg = config or load_config()
+    host = (urlparse(normalize_comfyui_base_url(cfg.comfyui.base_url)).hostname or "").strip().lower()
+    return host in {"", "localhost", "127.0.0.1", "0.0.0.0", "::1", "[::1]", "::"}
+
+
+def update_comfyui_settings(
+    *,
+    base_url: str | None = None,
+    enabled: bool | None = None,
+) -> AppConfig:
+    config = load_config()
+    if base_url is not None:
+        config.comfyui.base_url = normalize_comfyui_base_url(base_url)
+    if enabled is not None:
+        config.comfyui.enabled = bool(enabled)
+    save_config(config)
+    return config
 
 
 def update_llm_settings(
@@ -372,14 +401,8 @@ CHECKPOINT_DOWNLOAD_URLS: dict[str, str] = {
 }
 
 VIEW_CONSISTENCY_MODES: dict[str, dict[str, str]] = {
-    "img2img": {
-        "label": "img2img — быстро, без лишних моделей",
-    },
     "zero123": {
-        "label": "Zero123 — орбита от front (~9GB при первом выборе)",
-    },
-    "off": {
-        "label": "Off — только front, single-view mesh",
+        "label": "Zero123 — орбита left/back/right от front",
     },
 }
 
@@ -439,6 +462,8 @@ def _comfyui_checkpoint_folders_from_api(base_url: str) -> list[Path]:
 def comfyui_checkpoints_dir(config: AppConfig | None = None) -> Path | None:
     """Resolve checkpoints dir: live ComfyUI API first, then install_dir layout."""
     cfg = config or load_config()
+    if not comfyui_is_local(cfg):
+        return None
 
     api_folders = _comfyui_checkpoint_folders_from_api(cfg.comfyui.base_url)
     for folder in api_folders:
@@ -471,9 +496,8 @@ def missing_comfyui_checkpoints(config: AppConfig | None = None) -> list[str]:
         cfg.comfyui.checkpoint,
         cfg.comfyui.mesh_checkpoint,
         cfg.comfyui.image_checkpoint,
+        cfg.comfyui.zero123_checkpoint or "stable_zero123.ckpt",
     }
-    if (cfg.comfyui.view_consistency or "").strip().lower() == "zero123":
-        needed.add(cfg.comfyui.zero123_checkpoint or "stable_zero123.ckpt")
     missing = []
     for name in sorted(n for n in needed if n):
         if not (ckpt_dir / name).is_file():
@@ -492,6 +516,11 @@ def download_comfyui_checkpoints(
     cfg = config or load_config()
     ckpt_dir = comfyui_checkpoints_dir(cfg)
     if ckpt_dir is None:
+        if not comfyui_is_local(cfg):
+            raise RuntimeError(
+                "ComfyUI is remote — checkpoints must already be on that machine. "
+                f"URL: {normalize_comfyui_base_url(cfg.comfyui.base_url)}"
+            )
         raise RuntimeError(
             "comfyui.install_dir is not set — cannot download checkpoints. "
             "Set it in config.yaml (Desktop: Documents/ComfyUI; portable: .../ComfyUI) "
@@ -552,10 +581,8 @@ def download_comfyui_checkpoints(
 
 
 def apply_view_consistency(config: AppConfig, mode: str) -> AppConfig:
-    key = (mode or "img2img").strip().lower()
-    if key not in VIEW_CONSISTENCY_MODES:
-        raise ValueError(f"Unknown view_consistency: {mode}. Use img2img|zero123|off")
-    config.comfyui.view_consistency = key
+    _ = mode
+    config.comfyui.view_consistency = "zero123"
     return config
 
 
@@ -680,9 +707,7 @@ def generation_settings_payload(
     preset = (cfg.comfyui.quality_preset or "draft").lower()
     if preset not in QUALITY_PRESETS:
         preset = "draft"
-    view_mode = (cfg.comfyui.view_consistency or "img2img").lower()
-    if view_mode not in VIEW_CONSISTENCY_MODES:
-        view_mode = "img2img"
+    view_mode = "zero123"
     style = (cfg.comfyui.view_style or "clay").lower()
     if style not in VIEW_STYLE_MODES:
         style = "clay"

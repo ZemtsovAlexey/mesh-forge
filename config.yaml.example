@@ -21,6 +21,9 @@ gpu:
   # shared_gpu: true
 comfyui:
   enabled: true
+  # Local GPU: http://127.0.0.1:8188
+  # Another machine: http://192.168.1.20:8188
+  # On that host start ComfyUI with --listen 0.0.0.0 (scripts/start-comfyui.ps1 -ListenHost 0.0.0.0)
   base_url: http://127.0.0.1:8188
   # Empty = auto-detect (ComfyUI Desktop user data, else portable).
   # Desktop example: C:/Users/<you>/Documents/ComfyUI
@@ -32,8 +35,8 @@ comfyui:
   image_to_mesh_workflow: ""
   # draft | quality
   quality_preset: draft
-  # img2img | zero123 | off
-  view_consistency: img2img
+  # orbits are always Zero123
+  view_consistency: zero123
   # clay | color — clay лучше для mesh; color даёт цветные виды
   view_style: clay
   checkpoint: sd_xl_turbo_1.0_fp16.safetensors

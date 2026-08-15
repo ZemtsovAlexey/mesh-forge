@@ -37,6 +37,14 @@ export type ChatMessage = {
   tools: ToolCall[];
   artifacts: Artifact[];
   blocks?: MessageBlock[];
+  reply_to?: string;
+  reply_artifact_ids?: string[];
+};
+
+export type ReplyTarget = {
+  messageId: string;
+  preview: string;
+  artifactIds: string[];
 };
 
 export type ChatSummary = {
@@ -80,4 +88,9 @@ export type LLMSettings = {
   api_key: string;
   planner_model: string;
   vision_model: string;
+};
+
+export type ComfyUISettings = {
+  enabled: boolean;
+  base_url: string;
 };

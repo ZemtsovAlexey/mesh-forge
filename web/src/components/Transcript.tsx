@@ -1,13 +1,16 @@
 import { useEffect, useRef } from "react";
-import type { ChatMessage } from "../types";
+import type { ChatMessage, ReplyTarget } from "../types";
+import { replyPreview } from "../reply";
 import MessageView from "./MessageView";
 
 export default function Transcript({
   messages,
   streaming,
+  onReply,
 }: {
   messages: ChatMessage[];
   streaming: boolean;
+  onReply?: (target: ReplyTarget) => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -29,6 +32,7 @@ export default function Transcript({
   }, [messages, streaming]);
 
   const list = Array.isArray(messages) ? messages : [];
+  const byId = new Map(list.map((m) => [m.id, m]));
   return (
     <div className="transcript" ref={scroller}>
       <div className="transcript-inner">
@@ -46,7 +50,19 @@ export default function Transcript({
           list.map((m, i) => {
             const last = i === list.length - 1;
             const pending = streaming && last && m.role === "assistant";
-            return <MessageView key={m.id} message={m} pending={pending} />;
+            const quotedSrc = m.reply_to ? byId.get(m.reply_to) : undefined;
+            const quoted = quotedSrc
+              ? replyPreview(quotedSrc, m.reply_artifact_ids)
+              : "";
+            return (
+              <MessageView
+                key={m.id}
+                message={m}
+                quoted={quoted}
+                pending={pending}
+                onReply={onReply}
+              />
+            );
           })
         )}
       </div>

@@ -5,7 +5,7 @@ import Settings from "./components/Settings";
 import Sidebar from "./components/Sidebar";
 import StatusPills from "./components/StatusPills";
 import Transcript from "./components/Transcript";
-import type { Artifact, ChatDetail, ChatMessage, ChatSummary, SystemStatus, ToolCall } from "./types";
+import type { Artifact, ChatDetail, ChatMessage, ChatSummary, ReplyTarget, SystemStatus, ToolCall } from "./types";
 
 export default function App() {
   const [chats, setChats] = useState<ChatSummary[]>([]);
@@ -14,6 +14,11 @@ export default function App() {
   const [streamingById, setStreamingById] = useState<Record<string, boolean>>({});
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [settings, setSettings] = useState(false);
+  const [reply, setReply] = useState<ReplyTarget | null>(null);
+  const [titleEdit, setTitleEdit] = useState(false);
+  const [titleDraft, setTitleDraft] = useState("");
+  const titleInputRef = useRef<HTMLInputElement>(null);
+  const titleEditRef = useRef(false);
 
   const detailsRef = useRef(details);
   detailsRef.current = details;
@@ -61,6 +66,7 @@ export default function App() {
   }, []);
 
   const select = async (id: string) => {
+    if (id !== activeId) setReply(null);
     const cached = detailsRef.current[id];
     if (cached) setActiveId(id);
     if (cached && streamingRef.current[id]) return;
@@ -73,8 +79,55 @@ export default function App() {
   };
 
   const create = async () => {
+    setReply(null);
     const chat = await api.createChat();
     await refreshChats();
+    remember(chat);
+    setActiveId(chat.id);
+  };
+
+  const rename = async (id: string, title: string) => {
+    const next = title.trim();
+    if (!next) return;
+    try {
+      const chat = await api.renameChat(id, next);
+      remember(chat);
+      setChats((cur) => cur.map((item) => (item.id === id ? { ...item, title: chat.title } : item)));
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : String(err));
+    }
+  };
+
+  const remove = async (id: string) => {
+    const wasActive = activeId === id;
+    try {
+      if (streamingRef.current[id]) {
+        await api.stopChat(id).catch(() => undefined);
+      }
+      await api.deleteChat(id);
+    } catch (err) {
+      window.alert(err instanceof Error ? err.message : String(err));
+      return;
+    }
+    setStreamingById((cur) => {
+      const next = { ...cur };
+      delete next[id];
+      return next;
+    });
+    setDetails((cur) => {
+      const next = { ...cur };
+      delete next[id];
+      return next;
+    });
+    if (wasActive) setReply(null);
+    const list = await refreshChats();
+    if (!wasActive) return;
+    const fallback = list[0];
+    if (!fallback) {
+      setActiveId(null);
+      return;
+    }
+    const chat = await api.getChat(fallback.id);
     remember(chat);
     setActiveId(chat.id);
   };
@@ -85,6 +138,8 @@ export default function App() {
   };
 
   const send = async (text: string, files: File[]) => {
+    const citing = reply;
+    setReply(null);
     let chat = active;
     if (!chat) {
       chat = await api.createChat(text.slice(0, 40) || "Новый чат");
@@ -103,6 +158,8 @@ export default function App() {
       attachments: [],
       tools: [],
       artifacts: [],
+      reply_to: citing?.messageId || "",
+      reply_artifact_ids: citing?.artifactIds || [],
     };
     const assistant: ChatMessage = {
       id: assistantId,
@@ -119,16 +176,23 @@ export default function App() {
       messages: [...(Array.isArray(cur.messages) ? cur.messages : []), user, assistant],
     }));
     try {
-      await streamMessage(chatId, text, files, (event, data) => {
-        if (event === "assistant_start" && data.id) {
-          assistantId = String(data.id);
-        }
-        setDetails((cur) => {
-          const prev = cur[chatId];
-          if (!prev) return cur;
-          return { ...cur, [chatId]: applyEvent(prev, assistantId, event, data) };
-        });
-      });
+      await streamMessage(
+        chatId,
+        text,
+        files,
+        (event, data) => {
+          if (event === "assistant_start" && data.id) {
+            assistantId = String(data.id);
+          }
+          setDetails((cur) => {
+            const prev = cur[chatId];
+            if (!prev) return cur;
+            return { ...cur, [chatId]: applyEvent(prev, assistantId, event, data) };
+          });
+        },
+        undefined,
+        citing ? { messageId: citing.messageId, artifactIds: citing.artifactIds } : null,
+      );
       await refreshChats();
       remember(await api.getChat(chatId));
     } catch (err) {
@@ -149,6 +213,36 @@ export default function App() {
 
   const title = useMemo(() => active?.title || "MeshForge", [active]);
 
+  useEffect(() => {
+    titleEditRef.current = false;
+    setTitleEdit(false);
+  }, [activeId]);
+
+  useEffect(() => {
+    if (titleEdit) titleInputRef.current?.select();
+  }, [titleEdit]);
+
+  const startTitleEdit = () => {
+    if (!active) return;
+    setTitleDraft(active.title);
+    titleEditRef.current = true;
+    setTitleEdit(true);
+  };
+
+  const commitTitleEdit = async () => {
+    if (!active || !titleEditRef.current) return;
+    titleEditRef.current = false;
+    setTitleEdit(false);
+    const next = titleDraft.trim();
+    if (next && next !== active.title) await rename(active.id, next);
+  };
+
+  const confirmDelete = async () => {
+    if (!active) return;
+    if (!window.confirm(`Удалить чат «${active.title}»?`)) return;
+    await remove(active.id);
+  };
+
   return (
     <div className="app">
       <Sidebar
@@ -156,17 +250,79 @@ export default function App() {
         activeId={activeId}
         onSelect={select}
         onCreate={create}
+        onRename={rename}
+        onDelete={remove}
         onSettings={() => setSettings(true)}
       />
       <main className="main">
         <header className="topbar">
-          <h2>{title}</h2>
+          {active && titleEdit ? (
+            <input
+              ref={titleInputRef}
+              className="topbar-rename"
+              value={titleDraft}
+              maxLength={120}
+              aria-label="Название чата"
+              onChange={(e) => setTitleDraft(e.target.value)}
+              onBlur={() => void commitTitleEdit()}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  void commitTitleEdit();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  titleEditRef.current = false;
+                  setTitleEdit(false);
+                }
+              }}
+            />
+          ) : (
+            <h2>{title}</h2>
+          )}
+          {active ? (
+            <div className="topbar-actions">
+              <button type="button" title="Переименовать" onClick={startTitleEdit}>
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+                  <path
+                    d="M11.2 2.6 13.4 4.8 5.9 12.3 3.5 12.5 3.7 10.1 11.2 2.6Z"
+                    stroke="currentColor"
+                    strokeWidth="1.3"
+                    strokeLinejoin="round"
+                  />
+                  <path d="M9.9 3.9 12.1 6.1" stroke="currentColor" strokeWidth="1.3" />
+                </svg>
+              </button>
+              <button type="button" className="danger" title="Удалить чат" onClick={() => void confirmDelete()}>
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden>
+                  <path d="M3.5 4.5h9M6 4.5V3h4v1.5M5.2 4.5 5.7 13h4.6l.5-8.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+            </div>
+          ) : null}
           <StatusPills status={status} />
         </header>
-        <Transcript messages={Array.isArray(active?.messages) ? active.messages : []} streaming={streaming} />
-        <Composer disabled={false} streaming={streaming} onSend={send} onStop={stop} />
+        <Transcript
+          messages={Array.isArray(active?.messages) ? active.messages : []}
+          streaming={streaming}
+          onReply={setReply}
+        />
+        <Composer
+          disabled={false}
+          streaming={streaming}
+          reply={reply}
+          onClearReply={() => setReply(null)}
+          onSend={send}
+          onStop={stop}
+        />
       </main>
-      {settings ? <Settings onClose={() => setSettings(false)} /> : null}
+      {settings ? (
+        <Settings
+          onClose={() => {
+            setSettings(false);
+            api.status().then(setStatus).catch(() => undefined);
+          }}
+        />
+      ) : null}
     </div>
   );
 }
@@ -204,11 +360,13 @@ function applyEvent(
     });
     target = messages.length - 1;
   }
+  const prev = messages[target];
+  const prevBlocks = Array.isArray(prev.blocks) ? prev.blocks : [];
   const msg = {
-    ...messages[target],
-    tools: Array.isArray(messages[target].tools) ? [...messages[target].tools] : [],
-    artifacts: Array.isArray(messages[target].artifacts) ? [...messages[target].artifacts] : [],
-    blocks: Array.isArray(messages[target].blocks) ? [...messages[target].blocks] : [],
+    ...prev,
+    tools: Array.isArray(prev.tools) ? [...prev.tools] : [],
+    artifacts: Array.isArray(prev.artifacts) ? [...prev.artifacts] : [],
+    blocks: [...prevBlocks],
   };
 
   if (event === "user" && data.message) {

@@ -96,6 +96,7 @@ class ChatStore:
     def rename(self, chat_id: str, title: str) -> ChatMeta:
         meta = self.get_meta(chat_id)
         meta.title = title.strip() or meta.title
+        meta.title_locked = True
         self.save_meta(meta)
         return meta
 
@@ -154,6 +155,8 @@ class ChatStore:
 
     def maybe_set_title(self, chat_id: str, text: str) -> None:
         meta = self.get_meta(chat_id)
+        if meta.title_locked:
+            return
         if meta.title and meta.title != "Новый чат":
             return
         line = (text or "").strip().splitlines()[0] if text else ""

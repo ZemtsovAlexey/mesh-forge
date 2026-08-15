@@ -49,6 +49,8 @@ class MessageOut(BaseModel):
     tools: list[ToolCallOut] = Field(default_factory=list)
     artifacts: list[ArtifactOut] = Field(default_factory=list)
     blocks: list[MessageBlockOut] = Field(default_factory=list)
+    reply_to: str = ""
+    reply_artifact_ids: list[str] = Field(default_factory=list)
 
 
 class ChatDetail(BaseModel):
@@ -114,3 +116,19 @@ class LLMModelsResponse(BaseModel):
 class GenerationDefaults(BaseModel):
     quality_preset: str = "draft"
     view_style: str = "clay"
+
+
+class ComfyUISettings(BaseModel):
+    enabled: bool = True
+    base_url: str = "http://127.0.0.1:8188"
+
+
+class ComfyUISettingsUpdate(BaseModel):
+    base_url: str
+    enabled: bool | None = None
+
+
+class ComfyUIProbeResponse(BaseModel):
+    ok: bool
+    base_url: str
+    status: str = ""

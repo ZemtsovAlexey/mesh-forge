@@ -20,7 +20,6 @@ class ImageKnobs(BaseModel):
     steps: int | None = Field(default=None, ge=1, le=50)
     cfg: float | None = Field(default=None, ge=0.5, le=15)
     style: ViewStyle | None = None
-    denoise: float | None = Field(default=None, ge=0.15, le=0.95)
 
 
 class MeshGenKnobs(BaseModel):
@@ -52,10 +51,6 @@ def apply_image_knobs(knobs: ImageKnobs | None) -> tuple[AppConfig, dict[str, An
         cfg.comfyui.steps = int(_clamp(knobs.steps, 1, 50))
     if knobs.cfg is not None:
         cfg.comfyui.cfg = float(_clamp(knobs.cfg, 0.5, 15))
-    if knobs.denoise is not None:
-        value = float(_clamp(knobs.denoise, 0.15, 0.95))
-        cfg.comfyui.view_denoise = value
-        cfg.comfyui.view_denoise_turbo = value
     seed = _seed(knobs.seed)
     echo = {
         "seed": seed,
@@ -63,9 +58,6 @@ def apply_image_knobs(knobs: ImageKnobs | None) -> tuple[AppConfig, dict[str, An
         "steps": cfg.comfyui.steps,
         "cfg": cfg.comfyui.cfg,
         "style": cfg.comfyui.view_style,
-        "denoise": cfg.comfyui.view_denoise_turbo
-        if "turbo" in (cfg.comfyui.checkpoint or "").lower()
-        else cfg.comfyui.view_denoise,
     }
     return cfg, echo
 

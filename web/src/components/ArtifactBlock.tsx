@@ -1,22 +1,16 @@
 import { useState } from "react";
 import type { Artifact } from "../types";
+import { artifactCaption } from "../reply";
 import MeshViewer from "./MeshViewer";
 import Lightbox from "./Lightbox";
 
-const LABELS: Record<string, string> = {
-  front: "спереди",
-  left: "слева",
-  right: "справа",
-  back: "сзади",
-  preview: "превью",
-};
-
-function caption(art: Artifact): string {
-  const key = (art.label || art.view || "").toLowerCase();
-  return LABELS[key] || art.label || "";
-}
-
-export default function ArtifactBlock({ artifacts }: { artifacts: Artifact[] }) {
+export default function ArtifactBlock({
+  artifacts,
+  onReply,
+}: {
+  artifacts: Artifact[];
+  onReply?: (art: Artifact) => void;
+}) {
   const [light, setLight] = useState<string | null>(null);
   const [fullMesh, setFullMesh] = useState<Artifact | null>(null);
   const list = Array.isArray(artifacts) ? artifacts : [];
@@ -32,10 +26,22 @@ export default function ArtifactBlock({ artifacts }: { artifacts: Artifact[] }) 
             <figure key={img.id}>
               <img
                 src={img.url}
-                alt={caption(img) || img.name}
+                alt={artifactCaption(img) || img.name}
                 onClick={() => setLight(img.url)}
               />
-              {caption(img) ? <figcaption>{caption(img)}</figcaption> : null}
+              {onReply ? (
+                <button
+                  type="button"
+                  className="art-reply"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onReply(img);
+                  }}
+                >
+                  ответить
+                </button>
+              ) : null}
+              {artifactCaption(img) ? <figcaption>{artifactCaption(img)}</figcaption> : null}
             </figure>
           ))}
         </div>
@@ -47,6 +53,7 @@ export default function ArtifactBlock({ artifacts }: { artifacts: Artifact[] }) 
           downloadUrl={mesh.url}
           fullscreen={fullMesh?.id === mesh.id}
           onToggleFullscreen={() => setFullMesh((cur) => (cur?.id === mesh.id ? null : mesh))}
+          onReply={onReply ? () => onReply(mesh) : undefined}
         />
       ))}
       {light ? <Lightbox src={light} onClose={() => setLight(null)} /> : null}

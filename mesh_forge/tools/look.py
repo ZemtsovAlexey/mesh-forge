@@ -22,7 +22,7 @@ class Look(MeshTool):
         question: str = "",
         refs: list[str] | None = None,
     ) -> str:
-        """Vision look at images or a mesh preview. target: auto|mesh|images. refs: artifact ids; omit to use this-turn photos or latest images/mesh."""
+        """Vision look at images or a mesh preview. target: auto|mesh|images. refs: artifact ids; omit to use this-turn photos, a chat reply, or latest images/mesh."""
         store = ctx.deps.store
         chat_id = ctx.deps.chat_id
         images: list[tuple[str, Path]] = []
@@ -38,6 +38,12 @@ class Look(MeshTool):
             attached = [a for a in ctx.deps.attachments if a.kind == "image"]
             for art in attached[:4]:
                 images.append((art.label or art.id, store.resolve_file(chat_id, art.name)))
+            if not images:
+                for art in [a for a in ctx.deps.reply_artifacts if a.kind in {"image", "mesh_preview"}][:4]:
+                    try:
+                        images.append((art.label or art.view or art.id, store.resolve_ref(chat_id, art.id)))
+                    except FileNotFoundError:
+                        continue
             if not images:
                 pics = [a for a in store.list_files(chat_id) if a.kind == "image"][-4:]
                 for art in pics:

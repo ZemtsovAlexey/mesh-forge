@@ -32,13 +32,82 @@ def is_followup(text: str) -> bool:
 
 
 def workspace_instructions(ctx: RunContext[ChatDeps]) -> str:
-    return build_workspace_brief(ctx.deps.store, ctx.deps.chat_id, ctx.deps.attachments)
+    return build_workspace_brief(
+        ctx.deps.store,
+        ctx.deps.chat_id,
+        ctx.deps.attachments,
+        reply_artifacts=ctx.deps.reply_artifacts,
+    )
+
+
+def collect_message_artifacts(message: UiMessage) -> list[Artifact]:
+    items: list[Artifact] = []
+    seen: set[str] = set()
+    for art in [*message.attachments, *message.artifacts]:
+        key = art.id or art.name
+        if key and key not in seen:
+            seen.add(key)
+            items.append(art)
+    for tool in message.tools:
+        for art in tool.artifacts:
+            key = art.id or art.name
+            if key and key not in seen:
+                seen.add(key)
+                items.append(art)
+    return items
+
+
+def cited_artifacts(
+    messages: list[UiMessage],
+    reply_to: str,
+    reply_artifact_ids: list[str] | None = None,
+) -> list[Artifact]:
+    mid = (reply_to or "").strip()
+    if not mid:
+        return []
+    target = next((m for m in messages if m.id == mid), None)
+    if target is None:
+        return []
+    items = collect_message_artifacts(target)
+    wanted = [str(x).strip() for x in (reply_artifact_ids or []) if str(x).strip()]
+    if not wanted:
+        return items
+    allow = set(wanted)
+    return [a for a in items if a.id in allow or a.name in allow]
+
+
+def format_reply_prompt(artifacts: list[Artifact], reply_to: str) -> str:
+    if not artifacts:
+        return f"User is replying to chat message {reply_to}. Use that result, not a new object."
+    lines = [f"User is replying to chat message {reply_to}. Work on THESE artifacts only:"]
+    images: list[str] = []
+    front_id = ""
+    for art in artifacts:
+        view = (art.view or art.label or "").strip()
+        extra = f" view={view}" if view else ""
+        lines.append(f"- {art.kind} id={art.id}{extra}")
+        if art.kind == "image":
+            images.append(art.id)
+            if view.lower() == "front" and not front_id:
+                front_id = art.id
+    if images:
+        quoted = ", ".join(repr(i) for i in images)
+        lines.append(f"look refs=[{quoted}]. images_to_mesh images=[{quoted}].")
+    if front_id:
+        lines.append(
+            f"If the user wants more angles from this front, generate_views(ref_image={front_id!r}). "
+            "If they want to redo the picture itself, generate_image with a new seed."
+        )
+    if any(a.kind == "mesh" for a in artifacts):
+        lines.append("If they comment on the mesh shape, look(target='mesh') / inspect_mesh.")
+    return "\n".join(lines)
 
 
 def build_workspace_brief(
     store: ChatStore,
     chat_id: str,
     attachments: list[Artifact] | None = None,
+    reply_artifacts: list[Artifact] | None = None,
 ) -> str:
     """Compact chat state for the local LLM — it often ignores long tool history."""
     lines = ["Current workspace (trust this; do not re-ask what to create if a goal or images exist):"]
@@ -63,6 +132,14 @@ def build_workspace_brief(
     if attached:
         bits = ", ".join(f"{a.kind}:{a.id}" for a in attached)
         lines.append(f"- This-turn attachments: {bits}")
+    cited = reply_artifacts or []
+    if cited:
+        bits = ", ".join(
+            f"{a.kind}:{a.id}" + (f"({a.view or a.label})" if (a.view or a.label) else "")
+            for a in cited
+        )
+        lines.append(f"- User reply target: {bits}")
+        lines.append("  Use these ids for look / images_to_mesh / generate_views(ref_image=...).")
     if len(lines) == 1:
         return ""
     lines.append(

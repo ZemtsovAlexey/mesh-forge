@@ -8,17 +8,13 @@
 - картинки в ленте (lightbox), STL/OBJ — Three.js прямо в сообщении (на весь экран)
 - агент на [pydantic-ai](https://ai.pydantic.dev/) + LM Studio
 - тулы: `generate_image`, `generate_views`, `images_to_mesh` (1–4 фото, без pad до 4), `look`, `inspect_mesh`, `repair_mesh`, `orient_mesh`, `scale_mesh`, `smooth_mesh`, `decimate_mesh`
-- knobs на каждый generate-вызов: seed, quality (draft/quality), steps, cfg, style, denoise, guidance
+- knobs на каждый generate-вызов: seed, quality (draft/quality), steps, cfg, style, guidance
 
 ## Быстрый старт
 
 ```powershell
 cd C:\Users\ZemtsovAlexey\Projects\mesh-forge
 .\scripts\setup.ps1
-cd web
-npm install
-npm run build
-cd ..
 .\scripts\start-comfyui.ps1
 .\scripts\run.ps1
 ```
@@ -65,6 +61,14 @@ Checkpoint’ы:
 - `.\scripts\stop-comfyui.ps1` — остановить tracked/listening процесс
 - pid/log: `.runtime/comfyui.pid`, `.runtime/comfyui.out.log`, `.runtime/comfyui.err.log`
 
+ComfyUI можно держать на другой машине: в Настройках укажи URL API, например `http://192.168.1.20:8188`. На том ПК ComfyUI должен слушать не только localhost:
+
+```powershell
+.\scripts\start-comfyui.ps1 -ListenHost 0.0.0.0
+```
+
+Чекпоинты и custom nodes нужны на сервере ComfyUI. Если LLM и Comfy на разных хостах, GPU-очереди независимы (выгрузки VRAM нет).
+
 ## Конфиг
 
 Первый запуск создаёт `config.yaml`. Проверь `llm.*`, `comfyui.*`, `paths.projects`. `gpu.sequential_models` выгружает LLM/Comfy при смене слота — только если оба на одном хосте (для 8GB VRAM). Если `llm.base_url` и `comfyui.base_url` указывают на разные машины, очереди независимы и выгрузки нет. Принудительно: `gpu.shared_gpu: true|false`.
@@ -75,4 +79,4 @@ Checkpoint’ы:
 - `scripts/start-comfyui.ps1` / `stop-comfyui.ps1`
 - `scripts/run.ps1` — FastAPI (`-WithComfyUI` опционально)
 
-Frontend в dev: `cd web && npm run dev` (прокси на `:7860`). Для сервера нужна сборка `npm run build` → `web/dist`.
+UI собирается сам: при старте и при открытии `/`, если `web/src` новее `web/dist`. Достаточно обновить страницу. Нужен `npm` в PATH.

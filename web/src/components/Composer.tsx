@@ -1,13 +1,18 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import type { ReplyTarget } from "../types";
 
 export default function Composer({
   disabled,
   streaming,
+  reply,
+  onClearReply,
   onSend,
   onStop,
 }: {
   disabled?: boolean;
   streaming: boolean;
+  reply?: ReplyTarget | null;
+  onClearReply?: () => void;
   onSend: (text: string, files: File[]) => void;
   onStop: () => void;
 }) {
@@ -15,6 +20,11 @@ export default function Composer({
   const [files, setFiles] = useState<File[]>([]);
   const imageRef = useRef<HTMLInputElement>(null);
   const meshRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (reply) inputRef.current?.focus();
+  }, [reply]);
 
   const submit = () => {
     const value = text.trim();
@@ -27,6 +37,15 @@ export default function Composer({
   return (
     <div className="composer">
       <div className="composer-inner">
+        {reply ? (
+          <div className="reply-chip">
+            <span className="reply-chip-label">Ответ на</span>
+            <span className="reply-chip-text">{reply.preview}</span>
+            <button type="button" className="btn ghost" onClick={onClearReply} aria-label="Снять ответ">
+              ×
+            </button>
+          </div>
+        ) : null}
         {files.length ? (
           <div className="chips">
             {files.map((f, i) => (
@@ -44,12 +63,18 @@ export default function Composer({
           </div>
         ) : null}
         <textarea
+          ref={inputRef}
           rows={2}
-          placeholder="Опишите объект…"
+          placeholder={reply ? "Что сделать с этим?" : "Опишите объект…"}
           value={text}
           disabled={disabled}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => {
+            if (e.key === "Escape" && reply) {
+              e.preventDefault();
+              onClearReply?.();
+              return;
+            }
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
               if (!streaming) submit();

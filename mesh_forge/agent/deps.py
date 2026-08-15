@@ -17,6 +17,7 @@ class ChatDeps:
     chat_id: str
     store: ChatStore
     attachments: list[Artifact] = field(default_factory=list)
+    reply_artifacts: list[Artifact] = field(default_factory=list)
     emit: EmitFn = field(default=lambda _event: None)
     loop: asyncio.AbstractEventLoop | None = None
 

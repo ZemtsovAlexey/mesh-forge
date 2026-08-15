@@ -1,30 +1,37 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { LLMSettings } from "../types";
+import type { ComfyUISettings, LLMSettings } from "../types";
 
-const EMPTY: LLMSettings = {
+const EMPTY_LLM: LLMSettings = {
   base_url: "http://127.0.0.1:1234/v1",
   api_key: "lm-studio",
   planner_model: "",
   vision_model: "",
 };
 
+const EMPTY_COMFY: ComfyUISettings = {
+  enabled: true,
+  base_url: "http://127.0.0.1:8188",
+};
+
 export default function Settings({ onClose }: { onClose: () => void }) {
-  const [form, setForm] = useState<LLMSettings>(EMPTY);
+  const [form, setForm] = useState<LLMSettings>(EMPTY_LLM);
+  const [comfy, setComfy] = useState<ComfyUISettings>(EMPTY_COMFY);
   const [models, setModels] = useState<string[]>([]);
   const [error, setError] = useState("");
   const [hint, setHint] = useState("");
   const [loading, setLoading] = useState(true);
   const [fetching, setFetching] = useState(false);
+  const [probing, setProbing] = useState(false);
   const [openField, setOpenField] = useState<"planner" | "vision" | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    api
-      .getLlm()
-      .then((data) => {
+    Promise.all([api.getLlm(), api.getComfyui()])
+      .then(([llm, comfyui]) => {
         if (cancelled) return;
-        setForm({ ...EMPTY, ...data });
+        setForm({ ...EMPTY_LLM, ...llm });
+        setComfy({ ...EMPTY_COMFY, ...comfyui });
         setLoading(false);
       })
       .catch((err: Error) => {
@@ -72,8 +79,29 @@ export default function Settings({ onClose }: { onClose: () => void }) {
     }
   };
 
+  const probeComfy = async () => {
+    setProbing(true);
+    setError("");
+    setHint("Проверяю ComfyUI…");
+    try {
+      const res = await api.probeComfyui(comfy.base_url);
+      if (res.ok) {
+        setHint(`ComfyUI доступен: ${res.base_url}`);
+      } else {
+        setHint("");
+        setError(res.status || `ComfyUI недоступен: ${res.base_url}`);
+      }
+    } catch (err) {
+      setHint("");
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setProbing(false);
+    }
+  };
+
   const save = async () => {
     try {
+      await api.saveComfyui(comfy);
       await api.saveLlm(form);
       onClose();
     } catch (err) {
@@ -89,8 +117,9 @@ export default function Settings({ onClose }: { onClose: () => void }) {
           {loading ? <p className="modal-hint">Загрузка…</p> : null}
           {hint ? <p className="modal-hint">{hint}</p> : null}
           {error ? <p className="modal-error">{error}</p> : null}
+          <p className="settings-section">LM Studio</p>
           <label className="field">
-            LM Studio URL
+            URL
             <input value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} />
           </label>
           <label className="field">
@@ -119,10 +148,25 @@ export default function Settings({ onClose }: { onClose: () => void }) {
               setOpenField(null);
             }}
           />
+          <p className="settings-section">ComfyUI</p>
+          <label className="field">
+            URL
+            <input
+              value={comfy.base_url}
+              onChange={(e) => setComfy({ ...comfy, base_url: e.target.value })}
+              placeholder="http://127.0.0.1:8188"
+            />
+            <span className="field-hint">
+              Локально — http://127.0.0.1:8188. Другой ПК — http://192.168.x.x:8188 (там ComfyUI с --listen 0.0.0.0).
+            </span>
+          </label>
         </div>
         <div className="modal-actions">
           <button type="button" className="btn ghost" onClick={loadModels} disabled={fetching || loading}>
             {fetching ? "Загрузка…" : "Модели"}
+          </button>
+          <button type="button" className="btn ghost" onClick={probeComfy} disabled={probing || loading}>
+            {probing ? "Проверка…" : "Проверить Comfy"}
           </button>
           <span className="spacer" />
           <button type="button" className="btn ghost" onClick={onClose}>

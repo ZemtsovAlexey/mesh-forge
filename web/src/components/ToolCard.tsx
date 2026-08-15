@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { ToolCall } from "../types";
+import type { Artifact, ToolCall } from "../types";
 import ArtifactBlock from "./ArtifactBlock";
 
 function cleanSummary(value: string): string {
@@ -47,7 +47,13 @@ function extraKnobs(tool: ToolCall): [string, string][] {
   return [...fromArgs, ...fromEcho];
 }
 
-export default function ToolCard({ tool }: { tool: ToolCall }) {
+export default function ToolCard({
+  tool,
+  onReply,
+}: {
+  tool: ToolCall;
+  onReply?: (art: Artifact) => void;
+}) {
   const [open, setOpen] = useState(false);
   const knobs = extraKnobs(tool);
   const running = tool.status === "running";
@@ -99,7 +105,7 @@ export default function ToolCard({ tool }: { tool: ToolCall }) {
           {open && longSummary ? <div className="step-note">{summary}</div> : null}
         </div>
       ) : null}
-      <ArtifactBlock artifacts={tool.artifacts} />
+      <ArtifactBlock artifacts={tool.artifacts} onReply={onReply} />
     </div>
   );
 }

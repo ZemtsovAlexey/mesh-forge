@@ -73,9 +73,11 @@ def rename_chat(chat_id: str, body: RenameChatRequest) -> ChatDetail:
 @router.delete("/{chat_id}", status_code=204)
 def delete_chat(chat_id: str) -> None:
     try:
-        get_store().delete(chat_id)
+        get_store().get_meta(chat_id)
     except FileNotFoundError as exc:
         raise HTTPException(404, str(exc)) from exc
+    request_stop(chat_id)
+    get_store().delete(chat_id)
 
 
 @router.get("/{chat_id}/files/{name}")
@@ -114,6 +116,8 @@ async def post_message(
     chat_id: str,
     text: str = Form(""),
     files: list[UploadFile] | None = File(None),
+    reply_to: str = Form(""),
+    reply_artifacts: str = Form(""),
 ):
     store = get_store()
     try:
@@ -132,10 +136,17 @@ async def post_message(
             store.set_current_mesh(chat_id, dest)
         attachments.append(store.artifact_from_path(chat_id, dest, label=upload.filename))
 
+    reply_ids = [part.strip() for part in (reply_artifacts or "").replace(";", ",").split(",") if part.strip()]
     runner = get_runner()
 
     async def events():
-        async for chunk in runner.stream_turn(chat_id, text, attachments):
+        async for chunk in runner.stream_turn(
+            chat_id,
+            text,
+            attachments,
+            reply_to=reply_to,
+            reply_artifact_ids=reply_ids,
+        ):
             yield chunk
 
     return StreamingResponse(

@@ -42,6 +42,8 @@ class UiMessage(BaseModel):
     tools: list[ToolCallRecord] = Field(default_factory=list)
     artifacts: list[Artifact] = Field(default_factory=list)
     blocks: list[MessageBlock] = Field(default_factory=list)
+    reply_to: str = ""
+    reply_artifact_ids: list[str] = Field(default_factory=list)
 
 
 class ChatMeta(BaseModel):
@@ -50,6 +52,7 @@ class ChatMeta(BaseModel):
     created_at: str = ""
     updated_at: str = ""
     current_mesh: str = ""
+    title_locked: bool = False
 
 
 class ChatSummary(BaseModel):

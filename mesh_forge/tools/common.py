@@ -9,6 +9,17 @@ from mesh_forge.chat.models import Artifact
 from mesh_forge.ops.geometry import load_mesh, save_mesh
 
 
+def reply_image_id(ctx: RunContext[ChatDeps], *, prefer_front: bool = True) -> str | None:
+    images = [a for a in ctx.deps.reply_artifacts if a.kind == "image"]
+    if not images:
+        return None
+    if prefer_front:
+        for art in images:
+            if (art.view or art.label or "").strip().lower() == "front":
+                return art.id
+    return images[0].id
+
+
 def resolve_mesh(ctx: RunContext[ChatDeps], mesh_ref: str | None = None) -> Path:
     store = ctx.deps.store
     chat_id = ctx.deps.chat_id

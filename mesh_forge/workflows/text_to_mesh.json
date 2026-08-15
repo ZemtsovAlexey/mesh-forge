@@ -1,20 +1,14 @@
 {
   "stages": {
     "text_to_front": "text_to_front.json",
-    "text_to_multiview": "text_to_multiview.json",
     "zero123_orbits": "zero123_orbits.json",
-    "guided_edit_multiview": "guided_edit_multiview.json",
+    "guided_edit_front": "guided_edit_front.json",
     "multiview_to_mesh": "multiview_to_mesh.json",
     "image_to_mesh": "image_to_mesh.json"
   },
   "outputs": {
     "front": "7",
-    "views": {
-      "front": "21",
-      "left": "22",
-      "back": "23",
-      "right": "24"
-    },
+    "guided_front": "21",
     "orbits": {
       "left": "22",
       "back": "23",

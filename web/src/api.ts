@@ -1,4 +1,4 @@
-import type { ChatDetail, ChatMessage, ChatSummary, LLMSettings, SystemStatus, ToolCall } from "./types";
+import type { ChatDetail, ChatMessage, ChatSummary, ComfyUISettings, LLMSettings, SystemStatus, ToolCall } from "./types";
 
 function errorMessage(detail: unknown): string {
   if (typeof detail === "string" && detail.trim()) return detail;
@@ -54,6 +54,9 @@ function normalizeMessage(raw: Partial<ChatMessage> | null | undefined): ChatMes
     attachments: asArray(raw?.attachments),
     tools: asArray<Partial<ToolCall>>(raw?.tools).map(normalizeTool),
     artifacts: asArray(raw?.artifacts),
+    blocks: asArray(raw?.blocks),
+    reply_to: String(raw?.reply_to || ""),
+    reply_artifact_ids: asArray<string>(raw?.reply_artifact_ids).map(String).filter(Boolean),
   };
 }
 
@@ -108,6 +111,19 @@ export const api = {
     );
     return { ...raw, models: asArray<string>(raw?.models) };
   },
+  getComfyui: () => fetch("/api/settings/comfyui").then((r) => json<ComfyUISettings>(r)),
+  saveComfyui: (body: ComfyUISettings) =>
+    fetch("/api/settings/comfyui", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }).then((r) => json<{ ok: boolean }>(r)),
+  probeComfyui: (baseUrl: string) => {
+    const q = new URLSearchParams({ base_url: baseUrl });
+    return fetch(`/api/settings/comfyui/health?${q}`).then((r) =>
+      json<{ ok: boolean; base_url: string; status: string }>(r),
+    );
+  },
 };
 
 export type SseHandler = (event: string, data: Record<string, unknown>) => void;
@@ -118,10 +134,15 @@ export async function streamMessage(
   files: File[],
   onEvent: SseHandler,
   signal?: AbortSignal,
+  reply?: { messageId: string; artifactIds: string[] } | null,
 ): Promise<void> {
   const body = new FormData();
   body.append("text", text);
   for (const file of files) body.append("files", file);
+  if (reply?.messageId) {
+    body.append("reply_to", reply.messageId);
+    if (reply.artifactIds.length) body.append("reply_artifacts", reply.artifactIds.join(","));
+  }
   const res = await fetch(`/api/chats/${chatId}/messages`, { method: "POST", body, signal });
   const ctype = res.headers.get("content-type") || "";
   if (!res.ok || !res.body) {

@@ -71,7 +71,7 @@ class ImagesToMesh(MeshTool):
         """Reconstruct STL from N photos (1, 2, 3, or 4). Hunyuan MV max is 4 named cameras.
 
         images: artifact ids as strings, e.g. ["a19885e6_front"]. Objects {ref, view} also work.
-        If images is empty, use this-turn photo attachments only (not chat history).
+        If images is empty, use this-turn photo attachments, else images from a chat reply.
         1 image → single-view Hunyuan. 2–4 → multiview with ONLY provided slots (no front-padding).
         Several generate_image fronts are NOT left/back/right — use one photo, or generate_views for a real orbit.
         >4: first 4 used, rest reported as dropped. Label views after look if you know front/left/back/right.
@@ -160,8 +160,15 @@ def _pick_images(
             selected.append((item.view or _view_from_name(item.ref) or _view_from_name(path.name) or "", path))
     else:
         photos = [a for a in ctx.deps.attachments if a.kind == "image"]
+        if not photos:
+            photos = [a for a in ctx.deps.reply_artifacts if a.kind == "image"]
         for art in photos:
-            selected.append(("", ctx.deps.store.resolve_file(ctx.deps.chat_id, art.name)))
+            selected.append(
+                (
+                    (art.view or art.label or "").strip().lower(),
+                    ctx.deps.store.resolve_file(ctx.deps.chat_id, art.name),
+                )
+            )
     if len(selected) > 1 and all("_front" in path.name.lower() for _, path in selected):
         dropped.extend(path.name for _, path in selected[:-1])
         last_label, last_path = selected[-1]

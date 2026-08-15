@@ -283,7 +283,7 @@ def save_generation_settings(
     orch: Orchestrator,
     *,
     quality_preset: str,
-    view_consistency: str = "img2img",
+    view_consistency: str = "zero123",
     view_style: str = "clay",
     mesh_postprocess: bool = True,
     knobs: dict | None = None,

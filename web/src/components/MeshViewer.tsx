@@ -9,9 +9,10 @@ type Props = {
   fullscreen?: boolean;
   onToggleFullscreen?: () => void;
   downloadUrl?: string;
+  onReply?: () => void;
 };
 
-export default function MeshViewer({ url, fullscreen, onToggleFullscreen, downloadUrl }: Props) {
+export default function MeshViewer({ url, fullscreen, onToggleFullscreen, downloadUrl, onReply }: Props) {
   const host = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -118,6 +119,11 @@ export default function MeshViewer({ url, fullscreen, onToggleFullscreen, downlo
     <div className={`mesh-wrap${fullscreen ? " fullscreen" : ""}`}>
       <div className="mesh-canvas" ref={host} />
       <div className="mesh-actions">
+        {onReply ? (
+          <button type="button" className="btn ghost" onClick={onReply}>
+            Ответить
+          </button>
+        ) : null}
         {downloadUrl ? (
           <a className="btn ghost" href={downloadUrl} download>
             Скачать

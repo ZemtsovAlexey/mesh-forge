@@ -4,6 +4,9 @@ from fastapi import APIRouter, HTTPException, Query
 
 from api.deps import get_runner
 from api.schemas import (
+    ComfyUIProbeResponse,
+    ComfyUISettings,
+    ComfyUISettingsUpdate,
     GenerationDefaults,
     GpuQueueEntry,
     GpuQueueInfo,
@@ -18,6 +21,8 @@ from mesh_forge.config import (
     AppConfig,
     generation_settings_payload,
     load_config,
+    normalize_comfyui_base_url,
+    update_comfyui_settings,
     update_generation_settings,
     update_llm_settings,
 )
@@ -91,6 +96,31 @@ def put_llm(body: LLMSettingsUpdate) -> dict:
     except Exception as exc:
         raise HTTPException(500, str(exc)) from exc
     return {"ok": True, "system": _system_status().model_dump()}
+
+
+@router.get("/settings/comfyui", response_model=ComfyUISettings)
+def get_comfyui() -> ComfyUISettings:
+    cfg = load_config()
+    return ComfyUISettings(
+        enabled=bool(cfg.comfyui.enabled),
+        base_url=normalize_comfyui_base_url(cfg.comfyui.base_url),
+    )
+
+
+@router.put("/settings/comfyui")
+def put_comfyui(body: ComfyUISettingsUpdate) -> dict:
+    try:
+        update_comfyui_settings(base_url=body.base_url, enabled=body.enabled)
+    except Exception as exc:
+        raise HTTPException(500, str(exc)) from exc
+    return {"ok": True, "system": _system_status().model_dump()}
+
+
+@router.get("/settings/comfyui/health", response_model=ComfyUIProbeResponse)
+def probe_comfyui(base_url: str = Query("http://127.0.0.1:8188")) -> ComfyUIProbeResponse:
+    url = normalize_comfyui_base_url(base_url)
+    ok, status = ComfyUiClient.probe(url)
+    return ComfyUIProbeResponse(ok=ok, base_url=url, status=status)
 
 
 @router.get("/settings/llm/models", response_model=LLMModelsResponse)
