@@ -1,0 +1,119 @@
+api/routes/system.py
+  08ba2f91db71a380 8-9,29,32-33,39-52,60
+api/schemas.py
+  5f83aee9159e076c 37-42,51
+api/services.py
+  08ba2f91db71a380 203-213,217-224
+config.yaml.example
+  08ba2f91db71a380 17,19-21
+mesh_forge/agent/mesh_agent.py
+  5f83aee9159e076c 4-5,15-22,28
+mesh_forge/agent/prompt.py
+  308f8543721bdc7a 7,11
+  5f83aee9159e076c 11,21-24
+mesh_forge/agent/runner.py
+  08ba2f91db71a380 207,211-212
+  308f8543721bdc7a 201,205,274-282,284,296-299,301-323
+  5f83aee9159e076c 16-17,26,33-39,88-108,224,270,274-275,277-280,285,296-299,301,304-317,366-370
+  92cb3f757b7af71c 191,202,235
+mesh_forge/agent/workspace.py
+  5f83aee9159e076c 1-177,199-204
+mesh_forge/chat/models.py
+  5f83aee9159e076c 30-35,44
+mesh_forge/chat/store.py
+  5f83aee9159e076c 4,14-15,134
+mesh_forge/config.py
+  08ba2f91db71a380 51-52,193-197,203,239
+mesh_forge/mesh_qc.py
+  5f83aee9159e076c 7-8,54-58,129-133
+mesh_forge/ops/geometry.py
+  5f83aee9159e076c 3,14-20,24,26-33
+mesh_forge/runtime/gpu_handoff.py
+  08ba2f91db71a380 5,9,13-49,62-68
+mesh_forge/runtime/gpu_scheduler.py
+  08ba2f91db71a380 4,12-14,20-23,36-39,42-58,63,92-95,102,122,142,170-173,256-373
+mesh_forge/tools/images_to_mesh.py
+  5f83aee9159e076c 11-12,43,74-82,103
+mesh_forge/tools/repair_mesh.py
+  5f83aee9159e076c 24-29,31-59
+README.md
+  08ba2f91db71a380 32
+web/src/App.tsx
+  308f8543721bdc7a 241
+  5f83aee9159e076c 115,203,211,219-226,241
+  92cb3f757b7af71c 1,12-14,18-37,48-50,54,64-72,78-79,83-84,91-92,96-119,123-129,133,135-140,142-146,182-185,187,191,193,195,199,201-206,211,222-223
+web/src/components/MessageView.tsx
+  5f83aee9159e076c 1,5-33,41,43,49,76-86
+web/src/components/StatusPills.tsx
+  08ba2f91db71a380 7-16,21
+web/src/components/ToolCard.tsx
+  308f8543721bdc7a 9-47,52,55,57-59,86,88,93,98-99
+web/src/styles.css
+  308f8543721bdc7a 263-274
+web/src/types.ts
+  08ba2f91db71a380 62-64
+  5f83aee9159e076c 25-30,39
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "git-ai-lite-1.0.0",
+  "base_commit_sha": "af5c124e0ab27f1af0d83a99698c8871fed405fe",
+  "prompts": {
+    "92cb3f757b7af71c": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "5cc1786c-1aa6-463b-b0bf-72c587589519",
+        "model": "grok-4.6"
+      },
+      "human_author": "╨Ч╨╡╨╝╤Ж╨╛╨▓ ╨Р╨╗╨╡╨║╤Б╨╡╨╣ <zemtsov@moedelo.org>",
+      "messages": [],
+      "total_additions": 143,
+      "total_deletions": 66,
+      "accepted_lines": 107,
+      "accepted_deletions": 58,
+      "overridden_lines": 36
+    },
+    "08ba2f91db71a380": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "64e58900-194b-4565-b08a-6485b001bb9d",
+        "model": "grok-4.6"
+      },
+      "human_author": "╨Ч╨╡╨╝╤Ж╨╛╨▓ ╨Р╨╗╨╡╨║╤Б╨╡╨╣ <zemtsov@moedelo.org>",
+      "messages": [],
+      "total_additions": 412,
+      "total_deletions": 154,
+      "accepted_lines": 275,
+      "accepted_deletions": 38,
+      "overridden_lines": 137
+    },
+    "5f83aee9159e076c": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "df6e6714-0669-438b-b20e-b7322b6c2b83",
+        "model": "grok-4.6"
+      },
+      "human_author": "╨Ч╨╡╨╝╤Ж╨╛╨▓ ╨Р╨╗╨╡╨║╤Б╨╡╨╣ <zemtsov@moedelo.org>",
+      "messages": [],
+      "total_additions": 456,
+      "total_deletions": 76,
+      "accepted_lines": 421,
+      "accepted_deletions": 38,
+      "overridden_lines": 35
+    },
+    "308f8543721bdc7a": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "3562bb39-84ff-4e4b-b6ad-614fa8bd926e",
+        "model": "grok-4.6"
+      },
+      "human_author": "╨Ч╨╡╨╝╤Ж╨╛╨▓ ╨Р╨╗╨╡╨║╤Б╨╡╨╣ <zemtsov@moedelo.org>",
+      "messages": [],
+      "total_additions": 124,
+      "total_deletions": 43,
+      "accepted_lines": 103,
+      "accepted_deletions": 22,
+      "overridden_lines": 21
+    }
+  }
+}
