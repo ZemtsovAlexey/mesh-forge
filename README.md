@@ -73,7 +73,7 @@ Checkpoint’ы:
 
 Процессы:
 
-- `.\scripts\start-comfyui.ps1` — поднять API (Desktop `.venv` + `--base-directory`, либо portable `python_embeded`) и дождаться `/system_stats`
+- `.\scripts\start-comfyui.ps1` — поднять API на `0.0.0.0:8188` (Desktop `.venv` + `--base-directory`, либо portable `python_embeded`) и дождаться `/system_stats`. Локально: `http://127.0.0.1:8188`; с LAN: `http://<server-ip>:8188`. Только localhost: `-ListenHost 127.0.0.1`
 - `.\scripts\stop-comfyui.ps1` — остановить tracked/listening процесс
 - pid/log: `.runtime/comfyui.pid`, `.runtime/comfyui.out.log`, `.runtime/comfyui.err.log`
 

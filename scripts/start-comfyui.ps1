@@ -1,6 +1,6 @@
 param(
     [string]$InstallDir = "",
-    [string]$ListenHost = "127.0.0.1",
+    [string]$ListenHost = "0.0.0.0",
     [int]$Port = 8188
 )
 
@@ -10,9 +10,14 @@ $stateDir = Join-Path $root ".runtime"
 $pidFile = Join-Path $stateDir "comfyui.pid"
 . (Join-Path $PSScriptRoot "comfyui-common.ps1")
 
+# Wildcard bind addresses are not reliable HTTP targets; probe loopback instead.
+$probeHost = if ($ListenHost -in @("0.0.0.0", "::", "*")) { "127.0.0.1" } else { $ListenHost }
+$probeUrl = "http://${probeHost}:${Port}"
+$listenUrl = "http://${ListenHost}:${Port}"
+
 function Test-ComfyHealth {
     try {
-        $resp = Invoke-WebRequest -Uri "http://${ListenHost}:${Port}/system_stats" -UseBasicParsing -TimeoutSec 3
+        $resp = Invoke-WebRequest -Uri "${probeUrl}/system_stats" -UseBasicParsing -TimeoutSec 3
         return $resp.StatusCode -eq 200
     } catch {
         return $false
@@ -20,7 +25,7 @@ function Test-ComfyHealth {
 }
 
 if (Test-ComfyHealth) {
-    Write-Host "ComfyUI already running at http://${ListenHost}:${Port}" -ForegroundColor Green
+    Write-Host "ComfyUI already running at $listenUrl (probe $probeUrl)" -ForegroundColor Green
     exit 0
 }
 
@@ -78,7 +83,7 @@ Write-Host "ComfyUI pid=$($proc.Id), logs=$outLog / $errLog"
 $deadline = (Get-Date).AddMinutes(3)
 while ((Get-Date) -lt $deadline) {
     if (Test-ComfyHealth) {
-        Write-Host "ComfyUI is ready at http://${ListenHost}:${Port}" -ForegroundColor Green
+        Write-Host "ComfyUI is ready at $listenUrl (local $probeUrl)" -ForegroundColor Green
         exit 0
     }
     if ($proc.HasExited) {
@@ -87,4 +92,4 @@ while ((Get-Date) -lt $deadline) {
     Start-Sleep -Seconds 2
 }
 
-throw "Timed out waiting for ComfyUI on http://${ListenHost}:${Port}. Check logs: $outLog / $errLog"
+throw "Timed out waiting for ComfyUI on $listenUrl. Check logs: $outLog / $errLog"
