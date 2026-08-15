@@ -1,0 +1,58 @@
+mesh_forge/adapters/comfyui_client.py
+  8b2c4bf4c50763bc 23,648-653,1043,1047-1055,1095-1104,1106-1107,1109-1142,1144-1151
+  fec4f33f3aeb387b 23,648-653,1043,1047-1055,1095-1104,1106-1107,1109-1142,1144-1151
+mesh_forge/agent/prompt.py
+  8b2c4bf4c50763bc 19
+  fec4f33f3aeb387b 19
+mesh_forge/agent/runner.py
+  8b2c4bf4c50763bc 326-337,401
+  fec4f33f3aeb387b 326-337
+mesh_forge/agent/workspace.py
+  8b2c4bf4c50763bc 70-71
+  fec4f33f3aeb387b 70-71
+mesh_forge/backends/lmstudio.py
+  8b2c4bf4c50763bc 300-304
+mesh_forge/render.py
+  8b2c4bf4c50763bc 11-18,22,24-34,40-66,68-72,74,77-84,90,92-140,142-145,147,150-161
+  fec4f33f3aeb387b 11-18,24-32,40-63,65-66,69,72,74,77-79,90,92-116,120-140,142
+mesh_forge/tools/images_to_mesh.py
+  8b2c4bf4c50763bc 4,6,17-26,32-55,64,73-74,103-116,160
+  fec4f33f3aeb387b 4,6,17-26,32-47,49-55,64,103-108
+web/src/styles.css
+  8b2c4bf4c50763bc 25-33,40-41,43-44,53-56,63,72,87,139-141,151,166-167,169,369
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "git-ai-lite-1.0.0",
+  "base_commit_sha": "2908c9cd6a67954fa28a50e3e6c4a8bb952ce7bc",
+  "prompts": {
+    "fec4f33f3aeb387b": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "bb1f3609-092d-439a-8bbb-9d39f8dc982f",
+        "model": "grok-4.6"
+      },
+      "human_author": "╨Ч╨╡╨╝╤Ж╨╛╨▓ ╨Р╨╗╨╡╨║╤Б╨╡╨╣ <zemtsov@moedelo.org>",
+      "messages": [],
+      "total_additions": 317,
+      "total_deletions": 127,
+      "accepted_lines": 225,
+      "accepted_deletions": 39,
+      "overridden_lines": 92
+    },
+    "8b2c4bf4c50763bc": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "834717e1-fdf7-4ead-a250-2b78ba434aa1",
+        "model": "grok-4.6"
+      },
+      "human_author": "╨Ч╨╡╨╝╤Ж╨╛╨▓ ╨Р╨╗╨╡╨║╤Б╨╡╨╣ <zemtsov@moedelo.org>",
+      "messages": [],
+      "total_additions": 385,
+      "total_deletions": 143,
+      "accepted_lines": 302,
+      "accepted_deletions": 61,
+      "overridden_lines": 83
+    }
+  }
+}
