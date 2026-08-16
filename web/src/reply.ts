@@ -5,6 +5,9 @@ const VIEW_LABELS: Record<string, string> = {
   left: "слева",
   right: "справа",
   back: "сзади",
+  top: "сверху",
+  viewer: "обзор 3/4",
+  overview: "обзор 3/4",
   preview: "превью",
 };
 

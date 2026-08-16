@@ -21,6 +21,60 @@ logger = logging.getLogger("mesh_forge.comfyui")
 
 VIEW_LABELS = ("front", "left", "back", "right")
 _MESH_SUFFIXES = {".glb", ".gltf", ".obj", ".stl", ".ply"}
+_ISOLATION_SUFFIX = (
+    "single isolated object, one item only, entire object fully in frame "
+    "including legs and top, centered product shot, plain contrasting studio backdrop, "
+    "background must not match the object, no extra copies, no crop"
+)
+_GEOMETRY_SUFFIX = (
+    "standing on a flat ground plane, all legs or contact points on one level, "
+    "no tilt, no perspective distortion, no fisheye, no dutch angle"
+)
+_CAMERA_BY_VIEW = {
+    "front": (
+        "orthographic front elevation, eye-level camera looking straight on, "
+        "level horizon, object facing the camera, both sides equally visible, no three-quarter"
+    ),
+    "left": (
+        "orthographic left profile, eye-level true side view, "
+        "level horizon, 90-degree yaw from front, no three-quarter"
+    ),
+    "back": (
+        "orthographic rear elevation, eye-level camera behind the object, "
+        "level horizon, object facing away, no three-quarter"
+    ),
+    "right": (
+        "orthographic right profile, eye-level true side view, "
+        "level horizon, 90-degree yaw from front, no three-quarter"
+    ),
+}
+_VIEW_NEGATIVE_EXTRAS = (
+    "photorealistic photo, busy scene, collage, split screen, multiple subjects, "
+    "inconsistent identity across views, morphing shape, disconnected floating parts, "
+    "hands, people, text, watermark, logo, frame, cropped, cut off, "
+    "landscape background, sky, grass, trees, fence, scenery, 2d illustration background, "
+    "filament spools, sewing thread, workshop, crafts, "
+    "matching background texture, wood paneled wall, furniture showroom, "
+    "row of identical items, extra copies of the object, "
+    "three-quarter view, 3/4 view, isometric, dutch angle, tilted horizon, leaning object, "
+    "uneven legs, warped geometry, melting, perspective distortion, fisheye, "
+    "high angle, low angle, bird's eye, worm's eye, diagonal view, "
+    "side profile when front is required, three-quarter view when front is required"
+)
+_CLAY_NEGATIVE_EXTRAS = (
+    "colorful plastic, painted texture, multicolored patterns, "
+    "glossy materials, fabric, metallic reflections"
+)
+
+
+def isolation_view_prompt(subject: str, style: str = "clay", view: str = "front") -> str:
+    text = (subject or "").strip().rstrip(",")
+    label = (view or "front").strip().lower()
+    camera = _CAMERA_BY_VIEW.get(label, _CAMERA_BY_VIEW["front"])
+    extra = f"{camera}, {_GEOMETRY_SUFFIX}, {_ISOLATION_SUFFIX}"
+    if (style or "clay").strip().lower() == "clay":
+        extra = f"{extra}, matte clay, uniform light grey, no photoreal materials"
+    return f"{text}, {extra}" if text else extra
 
 
 @dataclass
@@ -752,26 +806,18 @@ class ComfyUiClient:
         return style if style in {"clay", "color"} else "clay"
 
     def _build_view_negative(self, base_negative: str) -> str:
-        extras = (
-            "photorealistic photo, busy scene, collage, split screen, multiple subjects, "
-            "inconsistent identity across views, morphing shape, disconnected floating parts, "
-            "hands, people, text, watermark, logo, frame, cropped, cut off, "
-            "landscape background, sky, grass, trees, fence, scenery, 2d illustration background, "
-            "filament spools, sewing thread, workshop, crafts, "
-            "side profile when front is required, three-quarter view when front is required"
-        )
+        extras = _VIEW_NEGATIVE_EXTRAS
         if self._view_style() == "clay":
-            extras = (
-                f"{extras}, colorful plastic, painted texture, multicolored patterns, "
-                "glossy materials, fabric, metallic reflections"
-            )
+            extras = f"{extras}, {_CLAY_NEGATIVE_EXTRAS}"
         base = (base_negative or "").strip().rstrip(",")
         return f"{base}, {extras}" if base else extras
 
     def _build_view_prompt(self, prompt: str, label: str) -> str:
-        # Comfy gets the translated user subject only — no clay/studio/camera boilerplate.
-        _ = label
-        return self._normalize_subject_prompt(prompt)
+        return isolation_view_prompt(
+            self._normalize_subject_prompt(prompt),
+            self._view_style(),
+            view=label,
+        )
 
     def _collect_front_image(
         self,

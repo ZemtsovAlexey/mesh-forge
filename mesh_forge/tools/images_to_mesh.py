@@ -73,11 +73,13 @@ class ImagesToMesh(MeshTool):
         images: artifact ids as strings, e.g. ["a19885e6_front"]. Objects {ref, view} also work.
         If images is empty, use this-turn photo attachments, else images from a chat reply.
         1 image → single-view Hunyuan. 2–4 → multiview with ONLY provided slots (no front-padding).
+        Photo with floor/studio/background → call remove_background first and pass the cutout ids, not the originals.
         Several generate_image fronts are NOT left/back/right — use one photo, or generate_views for a real orbit.
         >4: first 4 used, rest reported as dropped. Label views after look if you know front/left/back/right.
 
         Empty mesh (0 verts) is a failed reconstruction, not a hole. Do not repair. Retry with one front photo and a new seed.
-        Bad mesh with actual geometry → quality=quality or higher steps, then retry. Redo → new seed.
+        After a SUCCESSFUL mesh: stop. Do not inspect+repair+smooth. Open/non-watertight is normal.
+        Do not call this to undo a bad geometry edit — use restore_mesh (previous or source).
         """
         from mesh_forge import progress as prog
 
@@ -111,7 +113,8 @@ class ImagesToMesh(MeshTool):
             views = ", ".join(f"{label}={path.name}" for label, path in picked)
             return (
                 f"ERROR: Hunyuan failed on {len(picked)} image(s): {views}. {exc}. "
-                "Do not repair. Retry images_to_mesh with ONE front photo and a new seed."
+                "Do not repair. If a previous mesh exists, restore_mesh(to='source'). "
+                "Else retry images_to_mesh with ONE front photo and a new seed."
                 f" knobs={echo}"
             )
         dest = ctx.deps.store.new_file(ctx.deps.chat_id, "mesh.stl")
@@ -120,7 +123,8 @@ class ImagesToMesh(MeshTool):
         except Exception as exc:
             return (
                 f"ERROR: Hunyuan wrote {mesh.path.name}, but it could not be converted to STL: {exc}. "
-                "Retry images_to_mesh with ONE front photo and a new seed."
+                "If a previous mesh exists, restore_mesh(to='source'). "
+                "Else retry images_to_mesh with ONE front photo and a new seed."
             )
         ok, qc = mesh_is_usable(dest)
         views = ", ".join(f"{label}={path.name}" for label, path in picked)
@@ -128,13 +132,18 @@ class ImagesToMesh(MeshTool):
         if not ok:
             return (
                 f"ERROR: Hunyuan produced an empty/invalid mesh ({dest.name}) from {len(picked)} image(s): {views}."
-                f"{drop_note} {qc} Do not repair. Retry images_to_mesh with ONE front photo "
+                f"{drop_note} {qc} Do not repair. If a previous mesh exists, restore_mesh(to='source'). "
+                f"Else retry images_to_mesh with ONE front photo "
                 f"(not several generate_image fronts as left/back/right) and a new seed. knobs={echo}"
             )
-        ctx.deps.store.set_current_mesh(ctx.deps.chat_id, dest)
+        ctx.deps.store.set_current_mesh(ctx.deps.chat_id, dest, role="source")
         art = ctx.deps.store.artifact_from_path(ctx.deps.chat_id, dest, label="mesh")
         ctx.deps.emit_artifact(art)
-        return f"Mesh {art.name} from {len(picked)} image(s): {views}.{drop_note} knobs={echo}"
+        return (
+            f"Mesh {art.name} from {len(picked)} image(s): {views}.{drop_note} knobs={echo} "
+            "Это source-меш. Остановись. Не inspect+repair+smooth, пока пользователь не попросит. "
+            "Открытая поверхность — норма. Если позже правка испортит форму — restore_mesh."
+        )
 
 
 def _pick_images(

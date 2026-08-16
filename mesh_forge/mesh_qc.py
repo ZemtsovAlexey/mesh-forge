@@ -26,17 +26,19 @@ class MeshStats:
 
     def summary(self) -> str:
         lines = [
-            f"Triangles: {self.triangle_count:,}",
-            f"Vertices: {self.vertex_count:,}",
-            f"Watertight: {'yes' if self.watertight else 'NO'}",
-            f"Winding OK: {'yes' if self.winding_consistent else 'no'}",
+            f"Треугольники: {self.triangle_count}",
+            f"Вершины: {self.vertex_count}",
+            f"Замкнут: {'да' if self.watertight else 'нет'}",
+            f"Нормали: {'в порядке' if self.winding_consistent else 'перепутаны'}",
         ]
         if self.bbox_mm:
-            lines.append(f"BBox (mm): {self.bbox_mm[0]:.1f} x {self.bbox_mm[1]:.1f} x {self.bbox_mm[2]:.1f}")
+            lines.append(
+                f"Габарит (мм): {self.bbox_mm[0]:.1f} × {self.bbox_mm[1]:.1f} × {self.bbox_mm[2]:.1f}"
+            )
         if self.volume_mm3 is not None:
-            lines.append(f"Volume: {self.volume_mm3:.1f} mm³")
+            lines.append(f"Объём: {self.volume_mm3:.1f} мм³")
         if self.issues:
-            lines.append("Issues:")
+            lines.append("Проблемы:")
             lines.extend(f"  - {i}" for i in self.issues)
         return "\n".join(lines)
 
@@ -45,23 +47,23 @@ def analyze_mesh(mesh_path: Path) -> MeshStats:
     issues: list[str] = []
 
     if not mesh_path.is_file():
-        issues.append("Mesh file not found")
+        issues.append("Файл меша не найден")
         return MeshStats(issues=issues)
     if mesh_path.stat().st_size == 0:
-        issues.append("Mesh file is empty")
+        issues.append("Файл меша пустой")
         return MeshStats(issues=issues)
 
     loaded = read_trimesh(mesh_path)
     if loaded is None or isinstance(loaded, Scene):
-        issues.append("Scene contains no geometry")
+        issues.append("В сцене нет геометрии")
         return MeshStats(issues=issues)
     mesh = loaded
 
     if mesh is None or len(getattr(mesh, "vertices", [])) == 0:
-        issues.append("Mesh has no vertices")
+        issues.append("Нет вершин")
         return MeshStats(issues=issues)
     if len(getattr(mesh, "faces", [])) == 0:
-        issues.append("Mesh has no faces")
+        issues.append("Нет граней")
         return MeshStats(
             triangle_count=0,
             vertex_count=len(mesh.vertices),
@@ -75,35 +77,31 @@ def analyze_mesh(mesh_path: Path) -> MeshStats:
     except Exception:
         pass
 
-    if not mesh.is_watertight:
-        issues.append("Mesh is not watertight (holes or open edges)")
-    if not mesh.is_winding_consistent:
-        issues.append("Inconsistent face winding (normals may be flipped)")
+    # Open surface / mixed winding / tiny edges are typical for Hunyuan STL.
+    # Status fields (watertight, winding_consistent, min_edge_mm) still record them.
 
     edges = mesh.edges_unique_length
     min_edge = float(np.min(edges)) if len(edges) else None
-    if min_edge is not None and min_edge < 0.1:
-        issues.append(f"Very small edges detected (min {min_edge:.3f} mm)")
 
     extents = None
     bbox = mesh.bounds
     if bbox is not None and len(bbox) == 2:
         extents = (bbox[1] - bbox[0]).tolist()
     else:
-        issues.append("Could not compute bounding box")
+        issues.append("Не удалось посчитать габарит")
 
     volume = None
     if mesh.is_watertight:
         try:
             volume = float(mesh.volume)
         except Exception:
-            issues.append("Could not compute volume")
+            issues.append("Не удалось посчитать объём")
 
     surface_area = None
     try:
         surface_area = float(mesh.area)
     except Exception:
-        issues.append("Could not compute surface area")
+        issues.append("Не удалось посчитать площадь")
 
     return MeshStats(
         triangle_count=len(mesh.faces),

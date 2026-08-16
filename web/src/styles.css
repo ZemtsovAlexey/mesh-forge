@@ -317,16 +317,21 @@ button { cursor: pointer; }
 }
 .msg-bar {
   display: flex;
-  margin-top: 4px;
+  margin-top: 6px;
 }
+.msg.user .msg-bar { justify-content: flex-end; }
 .reply-link {
-  background: transparent;
-  border: 0;
-  color: var(--faint);
-  font-size: 12px;
-  padding: 4px 0;
+  background: var(--accent-soft);
+  border: 1px solid rgba(224, 176, 122, 0.28);
+  color: var(--accent);
+  font-size: 12.5px;
+  padding: 4px 10px;
+  border-radius: 999px;
 }
-.reply-link:hover { color: var(--accent); }
+.reply-link:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
 .reply-chip {
   display: flex;
   align-items: center;
@@ -469,14 +474,14 @@ button { cursor: pointer; }
   top: 8px;
   right: 8px;
   z-index: 1;
-  background: rgba(12, 11, 10, 0.78);
-  border: 1px solid var(--border-strong);
-  color: var(--text);
+  background: rgba(12, 11, 10, 0.86);
+  border: 1px solid rgba(224, 176, 122, 0.45);
+  color: var(--accent);
   border-radius: 999px;
   padding: 4px 9px;
   font-size: 11px;
 }
-.art-reply:hover { border-color: var(--accent); color: var(--accent); }
+.art-reply:hover { border-color: var(--accent); color: var(--text); }
 .art-grid figcaption {
   font-size: 11px;
   color: var(--faint);

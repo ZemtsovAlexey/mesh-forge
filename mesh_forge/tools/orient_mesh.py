@@ -16,4 +16,7 @@ class OrientMesh(MeshTool):
         src = resolve_mesh(ctx, mesh_ref)
         mesh = orient_upright(load_mesh(src))
         art = save_mesh_artifact(ctx, mesh, "oriented.stl", label="oriented")
-        return f"Oriented {src.name} → {art.name}"
+        return (
+            f"Oriented {src.name} → {art.name}. "
+            "look(target='mesh'). Если ориентация хуже — restore_mesh(to='previous')."
+        )

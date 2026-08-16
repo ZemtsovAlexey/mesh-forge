@@ -16,4 +16,7 @@ class SmoothMesh(MeshTool):
         src = resolve_mesh(ctx, mesh_ref)
         mesh = _smooth(load_mesh(src), iterations=iterations)
         art = save_mesh_artifact(ctx, mesh, "smoothed.stl", label="smoothed")
-        return f"Smoothed {src.name} → {art.name} (iterations={max(0, min(iterations, 5))})"
+        return (
+            f"Smoothed {src.name} → {art.name} (iterations={max(0, min(iterations, 5))}). "
+            "look(target='mesh'). Если пики или каша — restore_mesh(to='previous')."
+        )

@@ -92,14 +92,24 @@ def format_reply_prompt(artifacts: list[Artifact], reply_to: str) -> str:
                 front_id = art.id
     if images:
         quoted = ", ".join(repr(i) for i in images)
-        lines.append(f"look refs=[{quoted}]. images_to_mesh images=[{quoted}].")
+        lines.append(
+            f"look refs=[{quoted}]. If the photo has floor/studio/background, "
+            f"remove_background images=[{quoted}] then images_to_mesh with the NEW cutout ids. "
+            f"Else images_to_mesh images=[{quoted}]."
+        )
     if front_id:
         lines.append(
             f"If the user wants more angles from this front, generate_views(ref_image={front_id!r}). "
             "If they want to redo the picture itself, generate_image with a new seed."
         )
     if any(a.kind == "mesh" for a in artifacts):
-        lines.append("If they comment on the mesh shape, look(target='mesh') / inspect_mesh.")
+        lines.append(
+            "If they comment on the mesh shape, look(target='mesh', views='orbit') "
+            "or look with zoom/region for a detail. "
+            "Extra wings/blobs/protrusions → carve_mesh, not generate_image. "
+            "If a recent edit made it worse, restore_mesh. "
+            "Do not generate_image unless they ask to redo the picture."
+        )
     return "\n".join(lines)
 
 
@@ -120,7 +130,23 @@ def build_workspace_brief(
         lines.append("- Files:")
         lines.extend(files)
     mesh = store.current_mesh(chat_id)
-    lines.append(f"- Current mesh: {mesh.name}" if mesh else "- Current mesh: none")
+    source = store.source_mesh(chat_id)
+    previous = store.previous_mesh(chat_id)
+    if mesh:
+        lines.append(f"- Current mesh: {mesh.name}")
+        if source:
+            extra = " (same as current)" if source.name == mesh.name else ""
+            lines.append(f"- Source mesh (Hunyuan/upload, restore_mesh to='source'): {source.name}{extra}")
+        if previous and previous.name != mesh.name:
+            lines.append(f"- Previous mesh (before last edit, restore_mesh to='previous'): {previous.name}")
+        lines.append(
+            "- Mesh-edit mode: do NOT generate_image / generate_views / images_to_mesh "
+            "unless the user explicitly asks to redo the picture or rebuild the mesh. "
+            "Extra volumes/wings → carve_mesh after look. "
+            "If an edit ruined the shape, restore_mesh — do not repair the broken result and do not regen."
+        )
+    else:
+        lines.append("- Current mesh: none")
     tools = _recent_tools(messages)
     if tools:
         lines.append("- Recent tools:")
@@ -132,6 +158,11 @@ def build_workspace_brief(
     if attached:
         bits = ", ".join(f"{a.kind}:{a.id}" for a in attached)
         lines.append(f"- This-turn attachments: {bits}")
+        if any(a.kind == "image" for a in attached) and not mesh:
+            lines.append(
+                "  If those photos have floor/studio/background, remove_background first, "
+                "then images_to_mesh with the NEW cutout ids."
+            )
     cited = reply_artifacts or []
     if cited:
         bits = ", ".join(
@@ -139,14 +170,32 @@ def build_workspace_brief(
             for a in cited
         )
         lines.append(f"- User reply target: {bits}")
-        lines.append("  Use these ids for look / images_to_mesh / generate_views(ref_image=...).")
+        if mesh:
+            lines.append(
+                "  Work on these ids. Mesh comments → look / inspect_mesh / carve_mesh / restore_mesh. "
+                "Do not images_to_mesh unless they ask to rebuild."
+            )
+        else:
+            lines.append(
+                "  Use these ids for look / remove_background / images_to_mesh / generate_views(ref_image=...)."
+            )
     if len(lines) == 1:
         return ""
-    lines.append(
-        "Short follow-ups (продолжи / дальше / ok) continue this job: "
-        "use the image ids above as strings in images_to_mesh (e.g. images=[\"a19885e6_front\"]), "
-        "do not ask for a new object description."
-    )
+    if mesh:
+        lines.append(
+            "Short follow-ups continue this mesh. "
+            "Do not generate_image / images_to_mesh unless the user asks to redo the picture. "
+            "If an edit made the shape worse, restore_mesh(to='previous' or 'source'). "
+            "Do not ask for a new object description."
+        )
+    else:
+        lines.append(
+            "Short follow-ups (продолжи / дальше / ok) continue this job. "
+            "If look already returned NEXT: mesh, images_to_mesh with those ids. "
+            "If NEXT: cutout, remove_background first. "
+            "If NEXT: regen, generate_image with a new seed (also for 3/4 or warped geometry). "
+            "Do not ask for a new object description."
+        )
     return "\n".join(lines)
 
 

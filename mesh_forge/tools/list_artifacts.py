@@ -21,6 +21,12 @@ class ListArtifacts(MeshTool):
                 lines.append(f"- {art.id} ({art.kind}) {art.label}")
         if current:
             lines.append(f"Current mesh: {current.name}")
+        source = ctx.deps.store.source_mesh(ctx.deps.chat_id)
+        if source:
+            lines.append(f"Source mesh: {source.name}")
+        previous = ctx.deps.store.previous_mesh(ctx.deps.chat_id)
+        if previous:
+            lines.append(f"Previous mesh: {previous.name}")
         if arts:
             lines.append("Files:")
             for art in arts:

@@ -133,7 +133,7 @@ async def post_message(
         data = await upload.read()
         dest = store.save_bytes(chat_id, upload.filename, data)
         if suffix in _MESH_EXT:
-            store.set_current_mesh(chat_id, dest)
+            store.set_current_mesh(chat_id, dest, role="source")
         attachments.append(store.artifact_from_path(chat_id, dest, label=upload.filename))
 
     reply_ids = [part.strip() for part in (reply_artifacts or "").replace(";", ",").split(",") if part.strip()]

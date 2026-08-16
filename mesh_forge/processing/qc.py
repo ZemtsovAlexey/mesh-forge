@@ -12,4 +12,4 @@ class MeshQcService:
     def report(self, mesh_path: Path) -> str:
         stats = self.analyze(mesh_path)
         ready = is_print_ready(stats)
-        return stats.summary() + f"\n\nPrint ready: {'YES' if ready else 'NO — fix before slicing'}"
+        return stats.summary() + f"\n\nГотов к печати: {'да' if ready else 'нет — сначала починить'}"

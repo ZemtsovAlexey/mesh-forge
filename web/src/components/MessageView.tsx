@@ -52,17 +52,31 @@ export default function MessageView({
   if (!hasBody && !pending) return null;
 
   const thinking = pending && !items.length;
-  const canReply = Boolean(onReply) && !pending && Boolean(message.id) && !message.id.startsWith("tmp-") && !message.id.startsWith("u-");
+  const canReply =
+    Boolean(onReply) &&
+    Boolean(message.id) &&
+    !message.id.startsWith("tmp-") &&
+    !message.id.startsWith("u-");
   const replyArt = (art: Artifact) => onReply?.(makeReplyTarget(message, art));
   const replyMsg = () => onReply?.(makeReplyTarget(message));
+  const replyBar = canReply ? (
+    <div className="msg-bar">
+      <button type="button" className="reply-link" onClick={replyMsg}>
+        Ответить
+      </button>
+    </div>
+  ) : null;
 
   if (message.role === "user") {
     return (
       <article className="msg user">
         <div className="user-col">
           {quoted ? <div className="user-quote">Ответ на {quoted}</div> : null}
-          {message.attachments?.length ? <ArtifactBlock artifacts={message.attachments} /> : null}
+          {message.attachments?.length ? (
+            <ArtifactBlock artifacts={message.attachments} onReply={canReply ? replyArt : undefined} />
+          ) : null}
           {message.content ? <div className="user-text">{message.content}</div> : null}
+          {replyBar}
         </div>
       </article>
     );
@@ -99,13 +113,7 @@ export default function MessageView({
         {message.artifacts?.length ? (
           <ArtifactBlock artifacts={message.artifacts} onReply={canReply ? replyArt : undefined} />
         ) : null}
-        {canReply ? (
-          <div className="msg-bar">
-            <button type="button" className="reply-link" onClick={replyMsg}>
-              Ответить
-            </button>
-          </div>
-        ) : null}
+        {replyBar}
       </div>
     </article>
   );

@@ -133,13 +133,9 @@ def prepare_photo_preview(src: Path, dest_dir: Path, *, remove_bg: bool) -> Path
     shutil.copy2(src, raw)
     if remove_bg:
         try:
-            from rembg import remove
-            from PIL import Image
-            import io
+            from mesh_forge.ops.background import cut_background
 
-            data = remove(raw.read_bytes())
-            Image.open(io.BytesIO(data)).convert("RGBA").save(dest)
-            return dest
+            return cut_background(raw, dest)
         except Exception as exc:
             logger.warning("rembg unavailable or failed (%s); using original photo", exc)
     shutil.copy2(raw, dest)

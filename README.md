@@ -7,7 +7,7 @@
 - чат как в Cursor: тулы свёрнутыми карточками, стриминг, Stop
 - картинки в ленте (lightbox), STL/OBJ — Three.js прямо в сообщении (на весь экран)
 - агент на [pydantic-ai](https://ai.pydantic.dev/) + LM Studio
-- тулы: `generate_image`, `generate_views`, `images_to_mesh` (1–4 фото, без pad до 4), `look`, `inspect_mesh`, `repair_mesh`, `orient_mesh`, `scale_mesh`, `smooth_mesh`, `decimate_mesh`
+- тулы: `generate_image`, `generate_views`, `remove_background`, `images_to_mesh` (1–4 фото, без pad до 4), `look`, `inspect_mesh`, `repair_mesh`, `orient_mesh`, `scale_mesh`, `smooth_mesh`, `decimate_mesh`, `carve_mesh`
 - knobs на каждый generate-вызов: seed, quality (draft/quality), steps, cfg, style, guidance
 
 ## Быстрый старт

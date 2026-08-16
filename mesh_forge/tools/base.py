@@ -17,6 +17,7 @@ VIEW_STAGES: dict[str, str] = {
     "views": "виды",
     "mesh": "mesh",
     "image": "изображение",
+    "cutout": "фон",
     "concept": "концепт",
     "guided": "правка",
 }

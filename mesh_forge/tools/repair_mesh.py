@@ -18,12 +18,14 @@ class RepairMesh(MeshTool):
         ctx: RunContext[ChatDeps],
         mesh_ref: str | None = None,
         close_holes: bool = True,
-        keep_largest: bool = True,
+        keep_largest: bool = False,
         remove_needles: bool = True,
     ) -> str:
-        """Repair mesh: holes, non-manifold, drop floaters, needle faces. Uses current mesh if mesh_ref omitted.
+        """Repair mesh: holes, non-manifold, optional floaters, needle faces. Uses current mesh if mesh_ref omitted.
 
-        Do not call on an empty mesh (0 vertices). That is a failed reconstruction — retry images_to_mesh instead.
+        Only when the user asked to repair. Open/non-watertight Hunyuan output is normal — do not repair just for that.
+        keep_largest: only if there are obvious separate floaters (default false).
+        Do not call on an empty mesh. If this repair makes the shape worse, restore_mesh — do not generate_image.
         """
         from mesh_forge.mesh_qc import mesh_is_usable
 
@@ -32,7 +34,8 @@ class RepairMesh(MeshTool):
         if not ok:
             return (
                 f"Cannot repair {src.name}: mesh is empty or too broken.\n{qc}\n"
-                "Do not call repair again. Retry images_to_mesh with ONE front photo and a new seed."
+                "Do not call repair again. restore_mesh(to='source' or 'previous'). "
+                "Не generate_image, пока пользователь не попросит переделать картинку."
             )
         try:
             mesh = load_mesh(src)
@@ -51,9 +54,12 @@ class RepairMesh(MeshTool):
                     mesh = try_make_watertight(mesh)
                     notes.append("watertight-fallback")
             art = save_mesh_artifact(ctx, mesh, "repaired.stl", label="repaired")
-            return f"Repaired {src.name} → {art.name} ({', '.join(notes) or 'no-op'}). Faces={len(mesh.faces)}"
+            return (
+                f"Repaired {src.name} → {art.name} ({', '.join(notes) or 'no-op'}). Faces={len(mesh.faces)}. "
+                "look(target='mesh'). Если форма хуже — restore_mesh(to='previous'). Не generate_image."
+            )
         except Exception as exc:
             return (
                 f"Repair failed on {src.name}: {exc}. "
-                "If the mesh is empty, retry images_to_mesh with one front photo and a new seed."
+                "restore_mesh(to='previous' or 'source'). Не generate_image."
             )

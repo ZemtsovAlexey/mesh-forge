@@ -25,4 +25,7 @@ class DecimateMesh(MeshTool):
         target = int(target_faces) if target_faces else max(1000, n // 2)
         mesh = decimate(mesh, target)
         art = save_mesh_artifact(ctx, mesh, "decimated.stl", label="decimated")
-        return f"Decimated {src.name} → {art.name} ({n} → {len(mesh.faces)} faces)"
+        return (
+            f"Decimated {src.name} → {art.name} ({n} → {len(mesh.faces)} faces). "
+            "look(target='mesh'). Если дыры или каша — restore_mesh(to='previous')."
+        )

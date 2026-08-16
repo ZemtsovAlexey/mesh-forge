@@ -52,6 +52,8 @@ class ChatMeta(BaseModel):
     created_at: str = ""
     updated_at: str = ""
     current_mesh: str = ""
+    source_mesh: str = ""
+    previous_mesh: str = ""
     title_locked: bool = False
 
 

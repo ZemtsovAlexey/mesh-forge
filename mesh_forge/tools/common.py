@@ -38,10 +38,11 @@ def save_mesh_artifact(
     *,
     label: str = "",
     tool_id: str = "",
+    role: str = "edit",
 ) -> Artifact:
     dest = ctx.deps.store.new_file(ctx.deps.chat_id, filename)
     save_mesh(mesh, dest)
-    ctx.deps.store.set_current_mesh(ctx.deps.chat_id, dest)
+    ctx.deps.store.set_current_mesh(ctx.deps.chat_id, dest, role=role)
     art = ctx.deps.store.artifact_from_path(ctx.deps.chat_id, dest, label=label or dest.stem)
     ctx.deps.emit_artifact(art, tool_id=tool_id)
     return art

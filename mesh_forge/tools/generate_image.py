@@ -30,8 +30,11 @@ class GenerateImage(MeshTool):
         - seed: new seed to redo; omit = random
         - quality: draft (fast turbo) or quality (cleaner, slower)
         - steps, cfg: sampler
-        - style: clay (best for mesh) or color
-        Redo → new seed. User wants color not clay → style=color.
+        - style: clay (default, best for mesh) or color
+        Redo → new seed. style=color only if the user asked for a colored/textured picture.
+        Material words (wood, metal) are not a reason to leave clay.
+        Prompt: English subject only; isolation/framing/camera is added automatically.
+        Do not call when a mesh already exists unless the user explicitly asks to redo the picture.
         """
         from mesh_forge import progress as prog
 

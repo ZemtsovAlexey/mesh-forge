@@ -169,10 +169,10 @@ def run_generation_job(
 def export_info(manifest: ProjectManifest) -> ExportInfo:
     mesh = manifest.current_mesh_path()
     if not mesh:
-        return ExportInfo(report="No mesh to export", print_ready=False)
+        return ExportInfo(report="Нет меша для экспорта", print_ready=False)
     stats = analyze_mesh(mesh)
     ready = is_print_ready(stats)
-    report = stats.summary() + f"\n\nPrint ready: {'YES' if ready else 'NO — fix before slicing'}"
+    report = stats.summary() + f"\n\nГотов к печати: {'да' if ready else 'нет — сначала починить'}"
     return ExportInfo(
         report=report,
         print_ready=ready,

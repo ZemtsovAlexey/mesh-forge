@@ -171,6 +171,28 @@ Clarify rules (draft_prompt_en in your JSON is ignored — server translates use
             pass
         return ""
 
+    def _ensure_russian(self, text: str) -> str:
+        """Translate a look/inspect note if the vision model answered in English."""
+        cleaned = (text or "").strip()
+        if not cleaned or not _looks_english(cleaned):
+            return cleaned
+        system = (
+            "Переведи текст на русский. Сохрани списки и строки вида NEXT: regen|cutout|mesh "
+            "(ключи NEXT не переводи). Ответ — только перевод, без кавычек и пояснений."
+        )
+        try:
+            out = self.chat(
+                self.config.llm.planner_model,
+                [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": cleaned},
+                ],
+                temperature=0.0,
+            ).strip().strip('"').strip("'")
+            return out or cleaned
+        except Exception:
+            return cleaned
+
     def interpret_mesh_edit(
         self,
         *,
@@ -292,28 +314,53 @@ Rules:
             parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
         if not parts:
             return ""
+        is_mesh = any("mesh" in str(label).lower() for label, _ in images)
         prompt = (
-            "Ты глаза 3D-агента. Опиши то, что видишь, по-русски: объект, ракурс/поза, "
-            "стиль, пропорции, заметные дефекты, лишнее, соответствие запросу. "
-            "Без вступлений. Если кадров несколько — сначала общее, потом отличия по меткам."
+            "Ты глаза 3D-агента. Отвечай СТРОГО по-русски, коротко, без вступлений. "
+            "Опиши: объект, сколько штук, обрезан ли, фон, заметные дефекты, соответствие запросу."
         )
-        if any(str(label).lower() == "mesh" for label, _ in images):
+        if is_mesh:
             prompt += (
-                " Превью mesh: объект стоит на сетке пола (+Y вверх), ракурс 3/4 как у вьюера. "
-                "Наклон камеры — не наклон модели."
+                " Кадры — превью ОДНОГО mesh: объект стоит на сетке пола (+Y вверх). "
+                "Подпись кадра говорит ракурс (front/left/back/right/top/viewer) и если это крупный план. "
+                "Наклон камеры — не наклон модели. Несколько кадров сравни между собой: "
+                "что видно сбоку/сзади/сверху, чего нет на обзоре. "
+                "Сравни левый и правый бок: оба подлокотника, обе ножки, сиденье целиком? "
+                "Если один бок короче, деталь отпилена, ровный вертикальный срез, дыра на месте "
+                "подлокотника/сиденья/спинки — это БРАК ПРАВКИ, не шум. Напиши restore_mesh. "
+                "Не пиши «отлично», «успешно», «визуально целы», если не хватает части. "
+                "Если кадр closeup/region — опиши именно эту деталь (дыры, иглы, обрыв геометрии). "
+                "Не пиши NEXT. Не предлагай generate_image / images_to_mesh / новую картинку. "
+                "Мелкий шум и дырки в резьбе при ЦЕЛЫХ основных частях (спинка, сиденье, "
+                "оба подлокотника, ножки) — норма реконструкции, не повод чинить."
+            )
+        else:
+            prompt += (
+                " Кадр нужен для реконструкции ОДНОГО целого объекта. "
+                "Последней строкой РОВНО одно из:\n"
+                "NEXT: regen — несколько объектов, обрезка (нет ног/верха), не тот объект, "
+                "сильный брак формы, ракурс 3/4 вместо прямого вида, наклон/перекос, "
+                "ноги разной длины, сильная перспектива или рыбий глаз. "
+                "Если несколько кадров front/left/back/right: не ортогональный вид, "
+                "спина как фасад, профиль как 3/4, кривая геометрия — тоже regen.\n"
+                "NEXT: cutout — один целый объект, ровный ракурс, но есть пол, студия, стена или фон, "
+                "в том числе если фон похож на объект.\n"
+                "NEXT: mesh — один целый объект, ровный ортогональный ракурс, "
+                "на чистом или прозрачном фоне (clay без пола тоже mesh)."
             )
         focus = (question or "").strip()
         if focus:
             prompt += f"\nВопрос агента: {focus}"
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}, *parts]
         try:
-            return self.chat(
+            note = self.chat(
                 self.config.llm.vision_model,
                 [{"role": "user", "content": content}],
                 temperature=0.2,
             ).strip()
         except Exception:
             return ""
+        return self._ensure_russian(note)
 
     def describe_image(
         self,
@@ -342,13 +389,14 @@ Rules:
             {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{image_b64}"}},
         ]
         try:
-            return self.chat(
+            note = self.chat(
                 self.config.llm.vision_model,
                 [{"role": "user", "content": content}],
                 temperature=0.2,
             ).strip()
         except Exception:
             return ""
+        return self._ensure_russian(note)
 
     def describe_image_diff(self, instruction: str, mesh_preview_b64: str | None, ref_image_path: Path | None) -> str:
         content: list[dict[str, Any]] = [{"type": "text", "text": instruction}]

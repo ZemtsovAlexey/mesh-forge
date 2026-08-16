@@ -51,18 +51,67 @@ def repair_with_pymeshlab(mesh: trimesh.Trimesh, *, smooth_iters: int = 0) -> tr
             except Exception:
                 pass
         try:
-            _pml_method(ms, "meshing_remove_connected_component_by_face_number", mincomponentsize=50)
-        except Exception:
-            pass
-        try:
             _pml_method(ms, "meshing_close_holes", maxholesize=80)
         except Exception:
             pass
         if smooth_iters > 0:
             try:
-                _pml_method(ms, "apply_coord_laplacian_smoothing", stepsmoothnum=smooth_iters)
+                _pml_method(
+                    ms,
+                    "apply_coord_laplacian_smoothing_surface_preserving",
+                    iterations=max(1, int(smooth_iters)),
+                    angledeg=8.0,
+                )
+            except Exception:
+                try:
+                    _pml_method(ms, "apply_coord_hc_laplacian_smoothing")
+                except Exception:
+                    pass
+        ms.save_current_mesh(str(out))
+        return load_mesh(out)
+
+
+def smooth_with_pymeshlab(mesh: trimesh.Trimesh, *, iterations: int = 2) -> trimesh.Trimesh:
+    """Surface-preserving smooth plus small-hole fill. Does not split the surface."""
+    if not _pymeshlab_available():
+        raise ImportError("pymeshlab is not installed")
+
+    import pymeshlab
+
+    steps = max(1, min(int(iterations), 6))
+    with tempfile.TemporaryDirectory(prefix="meshforge_pml_smooth_") as tmp:
+        inp = Path(tmp) / "in.ply"
+        out = Path(tmp) / "out.ply"
+        save_mesh(mesh, inp)
+        ms = pymeshlab.MeshSet()
+        ms.load_new_mesh(str(inp))
+        for name in (
+            "meshing_remove_duplicate_vertices",
+            "meshing_remove_unreferenced_vertices",
+            "meshing_remove_null_faces",
+        ):
+            try:
+                _pml_method(ms, name)
             except Exception:
                 pass
+        try:
+            _pml_method(ms, "meshing_close_holes", maxholesize=30)
+        except Exception:
+            pass
+        try:
+            _pml_method(
+                ms,
+                "apply_coord_laplacian_smoothing_surface_preserving",
+                iterations=steps,
+                angledeg=8.0,
+            )
+        except Exception:
+            for _ in range(steps):
+                _pml_method(ms, "apply_coord_hc_laplacian_smoothing")
+        try:
+            _pml_method(ms, "meshing_close_holes", maxholesize=30)
+        except Exception:
+            pass
         ms.save_current_mesh(str(out))
         return load_mesh(out)
 

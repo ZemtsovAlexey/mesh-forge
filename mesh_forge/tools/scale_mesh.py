@@ -38,4 +38,7 @@ class ScaleMesh(MeshTool):
             return "Specify height_mm, factor, or axis+axis_mm."
         art = save_mesh_artifact(ctx, mesh, "scaled.stl", label="scaled")
         extents = [round(float(x), 1) for x in mesh.extents]
-        return f"Scaled {src.name} → {art.name} ({note}). BBox mm ≈ {extents}"
+        return (
+            f"Scaled {src.name} → {art.name} ({note}). BBox mm ≈ {extents}. "
+            "Если масштаб не тот — restore_mesh(to='previous')."
+        )

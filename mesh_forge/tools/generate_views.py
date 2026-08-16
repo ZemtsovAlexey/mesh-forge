@@ -29,7 +29,8 @@ class GenerateViews(MeshTool):
 
         If ref_image is set (artifact id), Zero123 orbits from that front.
         If omitted, uses the image the user replied to (front if present). Else text→front, then Zero123.
-        Redo → new seed.
+        Front must be a true eye-level orthographic shot; a 3/4 or tilted front makes every orbit crooked.
+        Redo a crooked front with generate_image first, then orbit. Redo orbits → new seed.
         """
         from mesh_forge import progress as prog
 

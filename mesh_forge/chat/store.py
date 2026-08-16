@@ -142,16 +142,66 @@ class ChatStore:
         self._agent_path(chat_id).write_bytes(data)
 
     def current_mesh(self, chat_id: str) -> Path | None:
-        meta = self.get_meta(chat_id)
-        if not meta.current_mesh:
-            return None
-        path = self.resolve_file(chat_id, meta.current_mesh)
-        return path if path.is_file() else None
+        return self._mesh_path(chat_id, self.get_meta(chat_id).current_mesh)
 
-    def set_current_mesh(self, chat_id: str, path: Path) -> None:
+    def source_mesh(self, chat_id: str) -> Path | None:
         meta = self.get_meta(chat_id)
-        meta.current_mesh = path.name
+        path = self._mesh_path(chat_id, meta.source_mesh)
+        if path:
+            return path
+        for art in self.list_files(chat_id):
+            if art.kind != "mesh":
+                continue
+            label = (art.label or "").strip().lower()
+            if label == "mesh" or str(art.name).endswith("_mesh.stl"):
+                found = self._mesh_path(chat_id, art.name)
+                if found:
+                    return found
+        return None
+
+    def previous_mesh(self, chat_id: str) -> Path | None:
+        return self._mesh_path(chat_id, self.get_meta(chat_id).previous_mesh)
+
+    def set_current_mesh(self, chat_id: str, path: Path, *, role: str = "edit") -> None:
+        meta = self.get_meta(chat_id)
+        name = path.name
+        kind = (role or "edit").strip().lower()
+        if kind == "source" or (kind == "edit" and not meta.source_mesh and not meta.current_mesh):
+            if meta.current_mesh and meta.current_mesh != name:
+                meta.previous_mesh = meta.current_mesh
+            meta.source_mesh = name
+            meta.current_mesh = name
+        else:
+            if meta.current_mesh and meta.current_mesh != name:
+                meta.previous_mesh = meta.current_mesh
+            if not meta.source_mesh:
+                meta.source_mesh = meta.previous_mesh or name
+            meta.current_mesh = name
         self.save_meta(meta)
+
+    def restore_mesh(self, chat_id: str, to: str = "previous") -> Path:
+        meta = self.get_meta(chat_id)
+        wanted = (to or "previous").strip().lower()
+        if wanted == "source":
+            target = self.source_mesh(chat_id)
+        else:
+            target = self.previous_mesh(chat_id) or self.source_mesh(chat_id)
+        if target is None:
+            raise FileNotFoundError("Нет меша для отката (previous/source пусты).")
+        if meta.current_mesh and meta.current_mesh != target.name:
+            meta.previous_mesh = meta.current_mesh
+            meta.current_mesh = target.name
+            self.save_meta(meta)
+        return target
+
+    def _mesh_path(self, chat_id: str, name: str) -> Path | None:
+        if not (name or "").strip():
+            return None
+        try:
+            path = self.resolve_file(chat_id, name)
+        except FileNotFoundError:
+            return None
+        return path if path.is_file() else None
 
     def maybe_set_title(self, chat_id: str, text: str) -> None:
         meta = self.get_meta(chat_id)
