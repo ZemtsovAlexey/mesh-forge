@@ -90,7 +90,9 @@ if not comfy.get("install_dir") and os.environ.get("MF_COMFY_ROOT"):
 data["comfyui"] = comfy
 
 seg = dict(data.get("segmentation") or {})
-seg["enabled"] = os.environ.get("MF_SEGMENTATION_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+seg["enabled"] = bool(seg.get("enabled", False))
+if os.environ.get("MF_SEGMENTATION_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}:
+    seg["enabled"] = True
 detector = str(os.environ.get("MF_SEGMENTATION_DETECTOR") or "groundingdino").strip().lower()
 seg["provider"] = str(seg.get("provider") or "comfyui")
 seg["detector"] = detector
@@ -103,6 +105,7 @@ seg["detector_device"] = str(seg.get("detector_device") or "cuda")
 seg["detector_dtype"] = str(seg.get("detector_dtype") or "float16")
 seg["segmenter"] = str(seg.get("segmenter") or "sam3")
 seg["segmenter_backend"] = str(seg.get("segmenter_backend") or "sam3")
+seg["segmenter_model"] = str(seg.get("segmenter_model") or "sam3.1_multiplex_fp16.safetensors")
 if not seg.get("segmenter_base_url"):
     seg["segmenter_base_url"] = comfy["base_url"]
 seg["workflow_detect"] = str(seg.get("workflow_detect") or "")

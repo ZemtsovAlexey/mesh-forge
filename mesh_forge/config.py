@@ -180,6 +180,7 @@ class SegmentationConfig:
     detector_dtype: str = "float16"
     segmenter: str = "sam3"
     segmenter_backend: str = "sam3"
+    segmenter_model: str = "sam3.1_multiplex_fp16.safetensors"
     # Empty = reuse comfyui.base_url.
     segmenter_base_url: str = ""
     workflow_detect: str = ""
@@ -251,6 +252,16 @@ class AppConfig:
     @property
     def comfyui_guided_edit_workflow_path(self) -> Path:
         return ROOT / "mesh_forge" / "workflows" / "guided_edit_front.json"
+
+    @property
+    def segmentation_detect_workflow_path(self) -> Path:
+        raw = self.segmentation.workflow_detect or str(ROOT / "mesh_forge" / "workflows" / "seg_detect_view.json")
+        return Path(raw)
+
+    @property
+    def segmentation_segment_workflow_path(self) -> Path:
+        raw = self.segmentation.workflow_segment or str(ROOT / "mesh_forge" / "workflows" / "seg_text_view.json")
+        return Path(raw)
 
     def resolve(self, key: str) -> Path | None:
         value = getattr(self.paths, key, "") or ""
@@ -399,9 +410,10 @@ def save_config(config: AppConfig) -> Path:
         "detector_dtype": config.segmentation.detector_dtype,
         "segmenter": config.segmentation.segmenter,
         "segmenter_backend": config.segmentation.segmenter_backend,
+        "segmenter_model": config.segmentation.segmenter_model,
         "segmenter_base_url": config.segmentation.segmenter_base_url,
-        "workflow_detect": config.segmentation.workflow_detect,
-        "workflow_segment": config.segmentation.workflow_segment,
+        "workflow_detect": config.segmentation.workflow_detect or str(config.segmentation_detect_workflow_path),
+        "workflow_segment": config.segmentation.workflow_segment or str(config.segmentation_segment_workflow_path),
         "render_size": config.segmentation.render_size,
         "max_views": config.segmentation.max_views,
         "sequential": bool(config.segmentation.sequential),

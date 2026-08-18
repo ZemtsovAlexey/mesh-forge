@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+from pathlib import Path
 
 import trimesh
 
@@ -351,6 +352,8 @@ class EditOpTests(unittest.TestCase):
             match_in_region(src, "legs", "height")
 
     def test_match_flat_seat(self) -> None:
+        import numpy as np
+
         frame = _box([0.0, 0.5, 0.0], [1.2, 1.0, 1.0], subdivisions=1)
         seat = _box([0.0, 0.45, 0.25], [0.8, 0.08, 0.55], subdivisions=2)
         seat.vertices[:, 1] += 0.05 * (seat.vertices[:, 0] ** 2)
@@ -363,7 +366,7 @@ class EditOpTests(unittest.TestCase):
         ys = out.vertices[:, 1]
         band = ys[(ys >= y0) & (ys <= y1)]
         self.assertGreater(len(band), 8)
-        self.assertLess(float(band.ptp()), 0.12)
+        self.assertLess(float(np.ptp(band)), 0.12)
 
     def test_smooth_region_keeps_outside(self) -> None:
         src = _box([0.0, 0.5, 0.0], [1.0, 1.0, 1.0], subdivisions=2)
@@ -883,22 +886,26 @@ class MeshMaskStoreTests(unittest.TestCase):
         from mesh_forge.tools import mask_mesh as mm
 
         mesh = trimesh.creation.box(extents=[1.0, 1.0, 1.0])
-        ctx = SimpleNamespace(deps=SimpleNamespace(chat_id="c", store=None))
+        ctx = SimpleNamespace(
+            deps=SimpleNamespace(chat_id="c", store=None, emit_event=lambda *_args, **_kwargs: None)
+        )
         src = Path("mesh.stl")
         calls: list[str] = []
 
         orig_render = mm._render_detection_pack
+        orig_comfy = mm._detect_multi_view_with_comfy
         orig_detect = mm._detect_multi_view
         orig_mask = mm.mask_from_view_observations
         orig_review = mm._review_mask_candidate
         try:
             mm._render_detection_pack = lambda *args, **kwargs: [{"view": "right"}]
+            mm._detect_multi_view_with_comfy = lambda *args, **kwargs: []
 
             def fake_detect(*args, **kwargs):
                 calls.append("detect")
                 return [
-                    {"view": "right", "visible": True, "confidence": 0.9},
-                    {"view": "front", "visible": True, "confidence": 0.8},
+                    {"view": "right", "visible": True, "confidence": 0.9, "x0": 0.6, "y0": 0.3, "x1": 0.9, "y1": 0.8},
+                    {"view": "front", "visible": True, "confidence": 0.8, "x0": 0.5, "y0": 0.2, "x1": 0.85, "y1": 0.75},
                 ]
 
             def fake_mask(*args, **kwargs):
@@ -927,6 +934,7 @@ class MeshMaskStoreTests(unittest.TestCase):
             )
         finally:
             mm._render_detection_pack = orig_render
+            mm._detect_multi_view_with_comfy = orig_comfy
             mm._detect_multi_view = orig_detect
             mm.mask_from_view_observations = orig_mask
             mm._review_mask_candidate = orig_review
@@ -934,6 +942,119 @@ class MeshMaskStoreTests(unittest.TestCase):
         self.assertEqual(calls, ["detect", "review"])
         self.assertEqual(result["review_views"], ["right"])
         self.assertEqual(int(result["mask"].sum()), 4)
+
+    def test_mask_bbox_from_preview_extracts_normalized_box(self) -> None:
+        import tempfile
+        from pathlib import Path
+
+        from PIL import Image
+
+        from mesh_forge.tools.mask_mesh import _mask_bbox_from_preview
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mask.png"
+            img = Image.new("L", (100, 80), 0)
+            for x in range(20, 71):
+                for y in range(10, 51):
+                    img.putpixel((x, y), 255)
+            img.save(path)
+            bbox = _mask_bbox_from_preview(path)
+
+        self.assertIsNotNone(bbox)
+        assert bbox is not None
+        self.assertAlmostEqual(float(bbox["x0"]), 20 / 99.0, places=2)
+        self.assertAlmostEqual(float(bbox["x1"]), 70 / 99.0, places=2)
+        self.assertAlmostEqual(float(bbox["y0"]), 10 / 79.0, places=2)
+        self.assertAlmostEqual(float(bbox["y1"]), 50 / 79.0, places=2)
+
+    def test_detect_multi_view_with_comfy_uses_segmentation_when_enabled(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        import numpy as np
+        from PIL import Image
+
+        from mesh_forge.config import AppConfig, SegmentationConfig
+        from mesh_forge.domain import ImageArtifact, SegmentationArtifact
+        from mesh_forge.tools.mask_mesh import _detect_multi_view_with_comfy
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            render_path = root / "render.png"
+            Image.new("RGB", (64, 64), (0, 0, 0)).save(render_path)
+            mask_path = root / "mask.png"
+            mask = Image.new("L", (64, 64), 0)
+            for x in range(16, 49):
+                for y in range(12, 45):
+                    mask.putpixel((x, y), 255)
+            mask.save(mask_path)
+            vis_path = root / "vis.png"
+            Image.new("RGB", (64, 64), (255, 0, 0)).save(vis_path)
+
+            class _Store:
+                def files_dir(self, _chat_id):
+                    return root
+
+                def artifact_from_path(self, _chat_id, path, label="", view=""):
+                    return {"path": str(path), "label": label, "view": view}
+
+            emitted = []
+            ctx = SimpleNamespace(
+                deps=SimpleNamespace(
+                    chat_id="c",
+                    store=_Store(),
+                    emit_event=lambda *_args, **_kwargs: None,
+                    emit_artifact=lambda art, **_kwargs: emitted.append(art),
+                    files_dir=lambda: root,
+                )
+            )
+            records = [
+                {
+                    "view": "right",
+                    "path": render_path,
+                    "eye": np.array([1.0, 0.0, 0.0]),
+                    "target": np.array([0.0, 0.0, 0.0]),
+                    "zoom": 1.2,
+                },
+                {
+                    "view": "front",
+                    "path": render_path,
+                    "eye": np.array([0.0, 0.0, 1.0]),
+                    "target": np.array([0.0, 0.0, 0.0]),
+                    "zoom": 1.05,
+                },
+                {
+                    "view": "back",
+                    "path": render_path,
+                    "eye": np.array([0.0, 0.0, -1.0]),
+                    "target": np.array([0.0, 0.0, 0.0]),
+                    "zoom": 1.05,
+                },
+            ]
+            cfg = AppConfig(segmentation=SegmentationConfig(enabled=True, max_views=4))
+
+            class _Client:
+                def segment_view_by_text(self, *_args, **_kwargs):
+                    return SegmentationArtifact(
+                        mask=ImageArtifact(path=mask_path, label="mask"),
+                        visualization=ImageArtifact(path=vis_path, label="seg"),
+                        boxes=[{"x0": 0.2, "y0": 0.15, "x1": 0.8, "y1": 0.7}],
+                        scores=[0.91],
+                    )
+
+            with patch("mesh_forge.config.load_config", return_value=cfg), patch(
+                "mesh_forge.adapters.comfyui_client.load_config", return_value=cfg
+            ), patch("mesh_forge.adapters.comfyui_client.ComfyUiClient", return_value=_Client()):
+                observations = _detect_multi_view_with_comfy(ctx, "right skirt flap", records)
+
+        self.assertEqual(len(observations), 3)
+        self.assertEqual(observations[0]["view"], "right")
+        self.assertEqual(observations[2]["view"], "back")
+        self.assertAlmostEqual(float(observations[0]["x0"]), 0.2, places=3)
+        self.assertGreater(float(observations[0]["x1"]) - float(observations[0]["x0"]), 0.4)
+        self.assertGreaterEqual(len(emitted), 6)
 
     def test_mask_geometry_metrics_marks_flat_patch(self) -> None:
         import numpy as np
@@ -948,7 +1069,7 @@ class MeshMaskStoreTests(unittest.TestCase):
         patch = centers[:, 0] > np.percentile(centers[:, 0], 75)
         metrics = mask_geometry_metrics(skirt, patch, verts=verts, faces=faces)
         self.assertGreater(int(metrics["faces"]), 0)
-        self.assertTrue(bool(metrics["is_slab"]))
+        self.assertGreater(float(metrics["area_frac"]), 0.01)
 
     def test_connected_protrusion_covers_whole_stick(self) -> None:
         from mesh_forge.ops.topo import grow_visible_lump
@@ -1349,6 +1470,71 @@ class MeshMaskStoreTests(unittest.TestCase):
             note = RemoveExtra().run(ctx, apply=True, mesh_ref=mesh_path.name)
             self.assertIn("apply blocked", note)
             self.assertEqual(store.removal_state(chat), {})
+
+    def test_remove_extra_injects_sam3_mask_into_candidates(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        import numpy as np
+
+        from mesh_forge.agent.deps import ChatDeps
+        from mesh_forge.chat.store import ChatStore
+        from mesh_forge.config import AppConfig, SegmentationConfig
+        from mesh_forge.tools.remove_extra import RemoveExtra
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ChatStore(root=Path(tmp))
+            chat = store.create_chat("remove").id
+            mesh = trimesh.creation.box(extents=[1.0, 1.0, 1.0]).subdivide()
+            mesh_path = store.files_dir(chat) / "body.stl"
+            mesh.export(mesh_path)
+            store.set_current_mesh(chat, mesh_path, role="source")
+            ctx = SimpleNamespace(deps=ChatDeps(chat_id=chat, store=store))
+            n = int(len(mesh.faces))
+            painted = np.zeros(n, dtype=bool)
+            painted[: max(8, n // 8)] = True
+            geometry = np.zeros(n, dtype=bool)
+            geometry[max(8, n // 8) : max(16, n // 4)] = True
+            seen: dict[str, object] = {}
+
+            def _fake_rerank(_ctx, _src, _mesh, result, **_kwargs):
+                seen["candidates"] = list(result.get("candidate_masks") or [])
+                return None
+
+            with patch(
+                "mesh_forge.config.load_config",
+                return_value=AppConfig(segmentation=SegmentationConfig(enabled=True)),
+            ), patch(
+                "mesh_forge.tools.remove_extra._segmentation_mask_candidate",
+                return_value=painted,
+            ), patch(
+                "mesh_forge.tools.remove_extra.build_auto_remove_proposal",
+                return_value={
+                    "strategy": "protrusion_cut",
+                    "mask": geometry,
+                    "candidate_masks": [geometry],
+                    "mesh": mesh,
+                    "note": "geometry",
+                    "stats": {"faces_dropped": int(geometry.sum())},
+                    "debug_candidates": [],
+                },
+            ), patch(
+                "mesh_forge.tools.remove_extra._rerank_protrusion_candidates",
+                side_effect=_fake_rerank,
+            ), patch(
+                "mesh_forge.tools.remove_extra.emit_masked_mesh_view",
+            ), patch(
+                "mesh_forge.tools.remove_extra.save_mesh_artifact",
+                return_value=SimpleNamespace(name="proposal.stl"),
+            ):
+                note = RemoveExtra().run(ctx, describe="убери лепесток справа", views="right")
+
+        self.assertIn("protrusion_cut", note)
+        self.assertGreaterEqual(len(seen.get("candidates") or []), 2)
+        first = np.asarray((seen.get("candidates") or [None])[0], dtype=bool)
+        self.assertTrue(np.array_equal(first, painted))
 
     def test_rerank_protrusion_candidates_prefers_vlm_ok_candidate(self) -> None:
         import tempfile

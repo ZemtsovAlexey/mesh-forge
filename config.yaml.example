@@ -89,6 +89,7 @@ segmentation:
   detector_dtype: float16
   segmenter: sam3
   segmenter_backend: sam3
+  segmenter_model: sam3.1_multiplex_fp16.safetensors
   # Empty = reuse comfyui.base_url.
   segmenter_base_url: ""
   workflow_detect: ""

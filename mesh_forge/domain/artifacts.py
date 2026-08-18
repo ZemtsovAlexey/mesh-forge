@@ -48,6 +48,16 @@ class MeshArtifact:
 
 
 @dataclass
+class SegmentationArtifact:
+    mask: ImageArtifact
+    visualization: ImageArtifact
+    label: str = "segmentation"
+    stage: str = "segmentation"
+    boxes: list[dict[str, float]] = field(default_factory=list)
+    scores: list[float] = field(default_factory=list)
+
+
+@dataclass
 class TextToMeshResult:
     views: ImageSet
     mesh: MeshArtifact

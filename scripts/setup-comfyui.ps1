@@ -188,9 +188,24 @@ if (-not (Test-ComfyLayoutReady $layout)) {
 
 # Re-query live folder list if ComfyUI is already up (portable install path may skip Find-ComfyLayout enrichment).
 Update-ComfyLayoutCheckpointDir -Layout $layout -ProjectRoot $root | Out-Null
+$liveCkptDir = Resolve-LiveComfyCheckpointDir -Layout $layout -ProjectRoot $root
+if ($liveCkptDir) {
+    $layout.CkptDir = $liveCkptDir
+    $layout.CkptDirSource = "live"
+}
 Write-Host "Checkpoint dir: $($layout.CkptDir)  [$($layout.CkptDirSource)]" -ForegroundColor Cyan
 
-New-Item -ItemType Directory -Force -Path $layout.CkptDir | Out-Null
+$comfyUrl = Read-ComfyBaseUrl -ProjectRoot $root
+$needSegmentation = [bool]($WithSegmentation -or (Read-SegmentationEnabled -ProjectRoot $root))
+$canWriteCheckpoints = [bool]$liveCkptDir
+if ($canWriteCheckpoints) {
+    New-Item -ItemType Directory -Force -Path $layout.CkptDir | Out-Null
+} elseif (Test-ComfyUrlIsLocal -BaseUrl $comfyUrl) {
+    New-Item -ItemType Directory -Force -Path $layout.CkptDir | Out-Null
+    $canWriteCheckpoints = $true
+} else {
+    Write-Warning "Not creating $($layout.CkptDir) here: live ComfyUI is $comfyUrl and this PC cannot write its checkpoint folder."
+}
 $workflowsDir = Join-Path $layout.UserDir "workflows"
 New-Item -ItemType Directory -Force -Path $workflowsDir | Out-Null
 
@@ -225,35 +240,51 @@ if (Test-Path $projectWf) {
     }
 }
 
-if ($WithSegmentation) {
-    Write-Host "Ensuring Comfy segmentation nodes..." -ForegroundColor Yellow
-    if (-not $SkipSegmentationNodes) {
-        $groundingRepo = "https://github.com/PozzettiAndrea/ComfyUI-Grounding.git"
-        Ensure-CustomNode -RepoUrl $groundingRepo -NodeName "ComfyUI-Grounding" -Layout $layout | Out-Null
-        if (-not (Test-Sam3Available -Layout $layout)) {
-            $sam3Repo = "https://github.com/PozzettiAndrea/ComfyUI-SAM3.git"
-            Ensure-CustomNode -RepoUrl $sam3Repo -NodeName "ComfyUI-SAM3" -Layout $layout | Out-Null
-        }
+if ($WithSegmentation -or $needSegmentation) {
+    $liveHasNativeSam3 = $false
+    try {
+        $info = Invoke-RestMethod -Uri ($comfyUrl.TrimEnd("/") + "/object_info/SAM3_Detect") -TimeoutSec 8
+        $liveHasNativeSam3 = [bool]$info.SAM3_Detect
+    } catch {
     }
-    if (-not $SkipSegmentationSmoke) {
-        $grounding = Test-GroundingAvailable -Layout $layout
-        if ($grounding) {
-            Write-Host "  detector nodes: OK ($grounding)" -ForegroundColor Green
-        } else {
-            Write-Warning "Detector node was not found after setup. Expected ComfyUI-Grounding or owl-vit-comfyui."
+    if ($canWriteCheckpoints -or (Test-ComfyUrlIsLocal -BaseUrl $comfyUrl)) {
+        Write-Host "Ensuring Comfy segmentation nodes..." -ForegroundColor Yellow
+        if (-not $SkipSegmentationNodes) {
+            $groundingRepo = "https://github.com/PozzettiAndrea/ComfyUI-Grounding.git"
+            Ensure-CustomNode -RepoUrl $groundingRepo -NodeName "ComfyUI-Grounding" -Layout $layout | Out-Null
+            if ((-not $liveHasNativeSam3) -and (-not (Test-Sam3Available -Layout $layout))) {
+                $sam3Repo = "https://github.com/PozzettiAndrea/ComfyUI-SAM3.git"
+                Ensure-CustomNode -RepoUrl $sam3Repo -NodeName "ComfyUI-SAM3" -Layout $layout | Out-Null
+            }
         }
-        $sam3 = Test-Sam3Available -Layout $layout
-        if ($sam3) {
-            Write-Host "  SAM3 nodes: OK ($sam3)" -ForegroundColor Green
-        } else {
-            Write-Warning "SAM3 node was not found after setup."
+        if (-not $SkipSegmentationSmoke) {
+            $grounding = Test-GroundingAvailable -Layout $layout
+            if ($grounding) {
+                Write-Host "  detector nodes: OK ($grounding)" -ForegroundColor Green
+            } else {
+                Write-Warning "Detector node was not found after setup. Expected ComfyUI-Grounding or owl-vit-comfyui."
+            }
+            if ($liveHasNativeSam3) {
+                Write-Host "  SAM3 nodes: OK (native SAM3_Detect on $comfyUrl)" -ForegroundColor Green
+            } else {
+                $sam3 = Test-Sam3Available -Layout $layout
+                if ($sam3) {
+                    Write-Host "  SAM3 nodes: OK ($sam3)" -ForegroundColor Green
+                } else {
+                    Write-Warning "SAM3 node was not found after setup."
+                }
+            }
+            Write-Host "  detector backend: $SegmentationDetector" -ForegroundColor Cyan
         }
-        Write-Host "  detector backend: $SegmentationDetector" -ForegroundColor Cyan
-        Write-Host "  note: detector/model weights are usually downloaded on first Comfy run." -ForegroundColor Cyan
+    } else {
+        Write-Host "ComfyUI is remote ($comfyUrl); skipping local custom_nodes install." -ForegroundColor Cyan
+        if ($liveHasNativeSam3) {
+            Write-Host "  SAM3 nodes: OK (native SAM3_Detect)" -ForegroundColor Green
+        }
     }
 }
 
-if (-not $SkipCheckpoints) {
+if ((-not $SkipCheckpoints) -and $canWriteCheckpoints) {
     Write-Host "Ensuring ComfyUI checkpoints in $($layout.CkptDir) ..." -ForegroundColor Yellow
     $checkpoints = @(
         @{
@@ -283,18 +314,14 @@ if (-not $SkipCheckpoints) {
     }
 
     foreach ($item in $checkpoints) {
-        $dest = Join-Path $layout.CkptDir $item.Name
-        if (Test-Path $dest) {
-            Write-Host "  OK $($item.Name)" -ForegroundColor Green
-            continue
-        }
-        $part = "$dest.part"
-        Write-Host "  Downloading $($item.Name)..." -ForegroundColor Yellow
-        curl.exe -L --fail --retry 3 --output $part $item.Url
-        if (-not $?) { throw "Failed to download $($item.Name)" }
-        Move-Item -Force $part $dest
-        Write-Host "  Saved $($item.Name)" -ForegroundColor Green
+        Ensure-DownloadedFile -Url $item.Url -Dest (Join-Path $layout.CkptDir $item.Name) | Out-Null
     }
+} elseif (-not $SkipCheckpoints) {
+    Write-Warning "Skipping Hunyuan/SDXL checkpoint downloads: ComfyUI checkpoints are not writable from this PC."
+}
+
+if ($needSegmentation) {
+    Ensure-Sam3Checkpoint -Layout $layout -ProjectRoot $root -Required
 }
 
 # Persist resolved install_dir into config.yaml when present.

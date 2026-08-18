@@ -1,0 +1,52 @@
+{
+  "1": {
+    "inputs": {
+      "image": "__SEG_INPUT__",
+      "upload": "image"
+    },
+    "class_type": "LoadImage"
+  },
+  "3": {
+    "inputs": {
+      "images": [
+        "15",
+        1
+      ]
+    },
+    "class_type": "PreviewImage"
+  },
+  "4": {
+    "inputs": {
+      "mask": [
+        "15",
+        0
+      ]
+    },
+    "class_type": "MaskPreview"
+  },
+  "12": {
+    "inputs": {
+      "precision": "__SEG_MODEL_PRECISION__",
+      "compile": false
+    },
+    "class_type": "LoadSAM3Model"
+  },
+  "15": {
+    "inputs": {
+      "sam3_model_config": [
+        "12",
+        0
+      ],
+      "image": [
+        "1",
+        0
+      ],
+      "positive_boxes": null,
+      "negative_boxes": null,
+      "confidence_threshold": "__SEG_THRESHOLD__",
+      "text_prompt": "__SEG_TEXT_PROMPT__",
+      "max_detections": "__SEG_MAX_DETECTIONS__"
+    },
+    "class_type": "SAM3Grounding"
+  }
+}

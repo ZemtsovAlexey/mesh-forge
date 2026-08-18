@@ -473,6 +473,215 @@ function Get-ComfyPortableDownloadInfo {
     throw "Unsupported GPU kind: $resolved"
 }
 
+function Get-LocalIPv4Addresses {
+    $addrs = @()
+    try {
+        $addrs = @(
+            Get-NetIPAddress -AddressFamily IPv4 -ErrorAction Stop |
+                Where-Object { $_.IPAddress -and $_.IPAddress -notlike "127.*" } |
+                ForEach-Object { $_.IPAddress }
+        )
+    } catch {
+    }
+    if ($addrs.Count -eq 0) {
+        $output = ipconfig 2>$null
+        foreach ($line in @($output)) {
+            if ($line -match "IPv4.*:\s*([0-9.]+)") {
+                $ip = $Matches[1]
+                if ($ip -notlike "127.*") { $addrs += $ip }
+            }
+        }
+    }
+    return @($addrs | Select-Object -Unique)
+}
+
+function Test-ComfyUrlIsLocal {
+    param([string]$BaseUrl)
+    try {
+        $uri = [Uri]$BaseUrl
+    } catch {
+        return $false
+    }
+$hostName = ([string]$uri.Host).Trim().ToLowerInvariant()
+    if ($hostName -in @("localhost", "127.0.0.1", "::1", "0.0.0.0")) {
+        return $true
+    }
+    return (Get-LocalIPv4Addresses) -contains $uri.Host
+}
+
+function Read-YamlSectionFlag {
+    param(
+        [string]$ProjectRoot,
+        [string]$Section,
+        [string]$Key
+    )
+    $cfg = Join-Path $ProjectRoot "config.yaml"
+    if (-not (Test-Path $cfg)) { return $null }
+    $inSection = $false
+    foreach ($line in (Get-Content -LiteralPath $cfg -Encoding UTF8)) {
+        if ($line -match "^${Section}\s*:") {
+            $inSection = $true
+            continue
+        }
+        if ($inSection -and $line -match "^\S") {
+            break
+        }
+        if ($inSection -and $line -match "^\s*${Key}\s*:\s*(.+)$") {
+            return $Matches[1].Trim().Trim('"').Trim("'")
+        }
+    }
+    return $null
+}
+
+function Read-SegmentationEnabled {
+    param([string]$ProjectRoot)
+    $raw = Read-YamlSectionFlag -ProjectRoot $ProjectRoot -Section "segmentation" -Key "enabled"
+    return [bool]($raw -and ($raw.ToLowerInvariant() -in @("true", "yes", "on", "1")))
+}
+
+function Read-SegmenterModel {
+    param(
+        [string]$ProjectRoot,
+        [string]$Fallback = "sam3.1_multiplex_fp16.safetensors"
+    )
+    $raw = Read-YamlSectionFlag -ProjectRoot $ProjectRoot -Section "segmentation" -Key "segmenter_model"
+    if ($raw) { return $raw }
+    return $Fallback
+}
+
+function Get-ComfyApiCheckpointNames {
+    param(
+        [string]$BaseUrl = "http://127.0.0.1:8188",
+        [int]$TimeoutSec = 5
+    )
+    $probe = ($BaseUrl.TrimEnd("/") + "/models/checkpoints")
+    try {
+        $json = Invoke-RestMethod -Uri $probe -TimeoutSec $TimeoutSec
+        return @($json | ForEach-Object { "$_" } | Where-Object { $_ })
+    } catch {
+        return @()
+    }
+}
+
+function Get-Sam3CheckpointSpec {
+    param(
+        [string]$ProjectRoot = "",
+        [string]$Name = ""
+    )
+    if (-not $Name) {
+        $Name = if ($ProjectRoot) {
+            Read-SegmenterModel -ProjectRoot $ProjectRoot
+        } else {
+            "sam3.1_multiplex_fp16.safetensors"
+        }
+    }
+    return [pscustomobject]@{
+        Name     = $Name
+        Url      = "https://huggingface.co/Comfy-Org/sam3.1/resolve/main/checkpoints/sam3.1_multiplex_fp16.safetensors"
+        MinBytes = 500MB
+    }
+}
+
+function Resolve-LiveComfyCheckpointDir {
+    param(
+        $Layout,
+        [string]$ProjectRoot = "",
+        [string]$BaseUrl = ""
+    )
+    if (-not $BaseUrl) {
+        $BaseUrl = if ($ProjectRoot) { Read-ComfyBaseUrl -ProjectRoot $ProjectRoot } else { "http://127.0.0.1:8188" }
+    }
+    $folders = @(Get-ComfyApiCheckpointFolders -BaseUrl $BaseUrl)
+    $liveNames = @(Get-ComfyApiCheckpointNames -BaseUrl $BaseUrl)
+    foreach ($folder in $folders) {
+        if (-not (Test-Path -LiteralPath $folder)) { continue }
+        $localNames = @(
+            Get-ChildItem -LiteralPath $folder -File -ErrorAction SilentlyContinue |
+                ForEach-Object { $_.Name }
+        )
+        if ($liveNames.Count -gt 0) {
+            $overlap = @($localNames | Where-Object { $liveNames -contains $_ })
+            if ($overlap.Count -gt 0) {
+                return $folder
+            }
+            continue
+        }
+        if (($localNames.Count -gt 0) -and (Test-ComfyUrlIsLocal -BaseUrl $BaseUrl)) {
+            return $folder
+        }
+    }
+    if (Test-ComfyUrlIsLocal -BaseUrl $BaseUrl) {
+        if ($Layout -and $Layout.CkptDir) {
+            return [string]$Layout.CkptDir
+        }
+        if ($folders.Count -gt 0 -and (Test-Path -LiteralPath $folders[0])) {
+            return [string]$folders[0]
+        }
+    }
+    return $null
+}
+
+function Ensure-DownloadedFile {
+    param(
+        [string]$Url,
+        [string]$Dest,
+        [long]$MinBytes = 10485760
+    )
+    $destItem = Get-Item -LiteralPath $Dest -ErrorAction SilentlyContinue
+    if ($destItem -and $destItem.Length -ge $MinBytes) {
+        Write-Host "  OK $(Split-Path $Dest -Leaf)" -ForegroundColor Green
+        return $Dest
+    }
+    $dir = Split-Path $Dest -Parent
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $part = "$Dest.part"
+    Write-Host "  Downloading $(Split-Path $Dest -Leaf)..." -ForegroundColor Yellow
+    curl.exe -L --fail --retry 3 --output $part $Url
+    if (-not $?) { throw "Failed to download $Url" }
+    $got = (Get-Item -LiteralPath $part).Length
+    if ($got -lt $MinBytes) {
+        Remove-Item -Force $part -ErrorAction SilentlyContinue
+        throw "Downloaded $got bytes for $(Split-Path $Dest -Leaf); expected at least $MinBytes. The URL likely returned an error page."
+    }
+    Move-Item -Force $part $Dest
+    Write-Host "  Saved $Dest" -ForegroundColor Green
+    return $Dest
+}
+
+function Ensure-Sam3Checkpoint {
+    param(
+        $Layout,
+        [string]$ProjectRoot,
+        [switch]$Required
+    )
+    $baseUrl = Read-ComfyBaseUrl -ProjectRoot $ProjectRoot
+    $spec = Get-Sam3CheckpointSpec -ProjectRoot $ProjectRoot
+    $liveNames = @(Get-ComfyApiCheckpointNames -BaseUrl $baseUrl)
+    if ($liveNames | Where-Object { $_ -match '(?i)sam3' }) {
+        Write-Host "SAM3 checkpoint: OK on $baseUrl ($(($liveNames | Where-Object { $_ -match '(?i)sam3' }) -join ', '))" -ForegroundColor Green
+        return
+    }
+    $dir = Resolve-LiveComfyCheckpointDir -Layout $Layout -ProjectRoot $ProjectRoot -BaseUrl $baseUrl
+    $folders = @(Get-ComfyApiCheckpointFolders -BaseUrl $baseUrl)
+    $hint = if ($folders.Count -gt 0) { [string]$folders[0] } else { "ComfyUI\models\checkpoints" }
+    if (-not $dir) {
+        $curlLine = "curl.exe -L --fail --retry 3 --output `"$hint\$($spec.Name)`" `"$($spec.Url)`""
+        $msg = @"
+SAM3 checkpoint $($spec.Name) is missing from ComfyUI at $baseUrl.
+This machine cannot write the live checkpoint folder ($hint).
+Run .\scripts\setup-segmentation.ps1 on the Comfy host, or paste:
+  $curlLine
+Then restart ComfyUI so CheckpointLoaderSimple sees the new file.
+"@
+        if ($Required) { throw $msg.Trim() }
+        Write-Warning $msg.Trim()
+        return
+    }
+    Write-Host "Ensuring SAM3 checkpoint in $dir ..." -ForegroundColor Yellow
+    Ensure-DownloadedFile -Url $spec.Url -Dest (Join-Path $dir $spec.Name) -MinBytes ([int64]$spec.MinBytes)
+    Write-Host "Restart ComfyUI if it was already running so it picks up $($spec.Name)." -ForegroundColor Cyan
+}
+
 function Get-GpuMemoryHintGb {
     $nvidiaSmi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
     if ($nvidiaSmi) {

@@ -414,6 +414,110 @@ def _detect_multi_view(ctx: RunContext[ChatDeps], target: str, records: list[dic
     return out
 
 
+def _mask_bbox_from_preview(path: Path) -> dict[str, float] | None:
+    from PIL import Image
+
+    image = Image.open(path).convert("L")
+    arr = np.asarray(image, dtype=np.uint8)
+    if arr.size == 0 or int(arr.max()) < 16:
+        return None
+    threshold = max(16, int(arr.max() * 0.35))
+    ys, xs = np.nonzero(arr >= threshold)
+    if xs.size == 0 or ys.size == 0:
+        return None
+    h, w = arr.shape
+    x0 = float(xs.min()) / max(1.0, float(w - 1))
+    x1 = float(xs.max()) / max(1.0, float(w - 1))
+    y0 = float(ys.min()) / max(1.0, float(h - 1))
+    y1 = float(ys.max()) / max(1.0, float(h - 1))
+    if x1 - x0 < 0.002 or y1 - y0 < 0.002:
+        return None
+    return {"x0": x0, "y0": y0, "x1": x1, "y1": y1}
+
+
+def _detect_multi_view_with_comfy(
+    ctx: RunContext[ChatDeps],
+    target: str,
+    records: list[dict],
+) -> list[dict]:
+    from mesh_forge.adapters.comfyui_client import ComfyUiClient
+    from mesh_forge.config import load_config
+
+    try:
+        seg_cfg = load_config().segmentation
+    except Exception:
+        return []
+    if not bool(seg_cfg.enabled):
+        return []
+
+    client = ComfyUiClient()
+    out: list[dict] = []
+    views = records[: max(1, int(seg_cfg.max_views or 4))]
+    _mask_log(
+        ctx,
+        f"Comfy segmentation enabled: text-masking {len(views)} views before VLM boxes.",
+    )
+    for index, rec in enumerate(views, start=1):
+        view = str(rec.get("view") or "right")
+        image_path = Path(rec["path"])
+        _mask_log(ctx, f"Comfy segmentation {index}/{len(views)} on {view}.")
+        try:
+            result = client.segment_view_by_text(
+                target,
+                image_path,
+                ctx.deps.files_dir() / "segmentation",
+                project_id=ctx.deps.chat_id,
+                max_detections=1,
+                confidence_threshold=float(seg_cfg.mask_threshold or 0.2),
+            )
+        except Exception as exc:
+            _mask_think(ctx, f"Comfy segmentation on {view} failed: {exc}.")
+            continue
+        _emit_mask_preview(
+            ctx,
+            result.visualization.path,
+            label=f"маска · comfy {view}",
+            view=view,
+        )
+        _emit_mask_preview(
+            ctx,
+            result.mask.path,
+            label=f"маска · comfy mask {view}",
+            view=view,
+        )
+        bbox = dict(result.boxes[0]) if result.boxes else _mask_bbox_from_preview(result.mask.path)
+        if not bbox:
+            _mask_think(ctx, f"Comfy segmentation on {view} returned no usable mask bbox.")
+            continue
+        area = float((bbox["x1"] - bbox["x0"]) * (bbox["y1"] - bbox["y0"]))
+        score = float(result.scores[0]) if result.scores else max(0.25, min(0.95, area * 4.0 + 0.25))
+        source = "sam3 boxes" if result.boxes else "mask preview"
+        _mask_think(ctx, f"Comfy segmentation on {view}: bbox area={area:.3f} via {source}.")
+        out.append(
+            {
+                "view": view,
+                "visible": True,
+                "confidence": max(0.25, min(0.95, score if score <= 1.0 else score / 100.0)),
+                "kind": "sam3_grounding",
+                "touchesBody": True,
+                "note": f"bbox derived from comfy {source}",
+                "eye": rec["eye"],
+                "target": rec["target"],
+                "zoom": rec["zoom"],
+                **bbox,
+            }
+        )
+    if out:
+        summary = "; ".join(
+            f"{obs.get('view')} bbox=({float(obs['x0']):.2f},{float(obs['y0']):.2f})-({float(obs['x1']):.2f},{float(obs['y1']):.2f})"
+            for obs in out
+        )
+        _mask_think(ctx, f"Comfy observations: {summary}.")
+    else:
+        _mask_think(ctx, "Comfy segmentation produced no usable observations; falling back to VLM box detect.")
+    return out
+
+
 def _build_auto_mask(
     ctx: RunContext[ChatDeps],
     mesh,
@@ -424,6 +528,7 @@ def _build_auto_mask(
     yaw: float | None,
     pitch: float | None,
     zoom: float,
+    review: bool = True,
 ) -> dict:
     from mesh_forge.render import _seat_for_viewer
 
@@ -433,6 +538,13 @@ def _build_auto_mask(
     _mask_log(ctx, f"Building automatic mask for: {target}. Focus view: {focus_view}.")
     best: dict | None = None
     best_score = -1.0
+    min_views = 2
+    try:
+        from mesh_forge.config import load_config
+
+        min_views = max(1, int(load_config().segmentation.projection_min_views or 2))
+    except Exception:
+        pass
     passes = [float(max(zoom, 1.0)), float(max(1.55, zoom * 1.35))]
     for index, detect_zoom in enumerate(passes):
         _mask_log(ctx, f"Detect pass {index + 1}: render + detect at zoom {detect_zoom:.2f}.")
@@ -445,10 +557,13 @@ def _build_auto_mask(
             yaw=yaw,
             pitch=pitch,
         )
-        observations = _detect_multi_view(ctx, target, records)
+        observations = _detect_multi_view_with_comfy(ctx, target, records)
+        if not observations:
+            observations = _detect_multi_view(ctx, target, records)
         if not observations:
             continue
-        scored_observations = _score_observations(focus_view, observations, limit=2)
+        view_limit = max(min_views, len(observations))
+        scored_observations = _score_observations(focus_view, observations, limit=view_limit)
         _mask_log(
             ctx,
             "Scoring candidate from views: "
@@ -468,7 +583,7 @@ def _build_auto_mask(
             }
         visible = [obs for obs in scored_observations if obs.get("visible")]
         # A confident first pass should not pay for a second full detect pack.
-        if index == 0 and np.any(mask) and len(visible) >= 2 and score_sum > 0.0:
+        if index == 0 and np.any(mask) and len(visible) >= min_views and score_sum > 0.0:
             break
     if best is None:
         return {
@@ -482,7 +597,7 @@ def _build_auto_mask(
     mask = np.asarray(best["mask"], dtype=bool)
     verdict: dict = {}
     review_views: list[str] = []
-    if np.any(mask):
+    if review and np.any(mask):
         _mask_log(ctx, f"Reviewing candidate mask of {int(mask.sum())} faces.")
         verdict, review_views = _review_mask_candidate(
             ctx,

@@ -1,0 +1,76 @@
+{
+  "1": {
+    "inputs": {
+      "image": "__SEG_INPUT__",
+      "upload": "image"
+    },
+    "class_type": "LoadImage"
+  },
+  "3": {
+    "inputs": {
+      "images": [
+        "16",
+        0
+      ]
+    },
+    "class_type": "PreviewImage"
+  },
+  "4": {
+    "inputs": {
+      "mask": [
+        "15",
+        0
+      ]
+    },
+    "class_type": "MaskPreview"
+  },
+  "12": {
+    "inputs": {
+      "ckpt_name": "__SEG_CHECKPOINT__"
+    },
+    "class_type": "CheckpointLoaderSimple"
+  },
+  "13": {
+    "inputs": {
+      "text": "__SEG_TEXT_PROMPT__",
+      "clip": [
+        "12",
+        1
+      ]
+    },
+    "class_type": "CLIPTextEncode"
+  },
+  "15": {
+    "inputs": {
+      "model": [
+        "12",
+        0
+      ],
+      "image": [
+        "1",
+        0
+      ],
+      "threshold": "__SEG_THRESHOLD__",
+      "refine_iterations": 2,
+      "individual_masks": false,
+      "conditioning": [
+        "13",
+        0
+      ]
+    },
+    "class_type": "SAM3_Detect"
+  },
+  "16": {
+    "inputs": {
+      "bboxes": [
+        "15",
+        1
+      ],
+      "image": [
+        "1",
+        0
+      ]
+    },
+    "class_type": "DrawBBoxes"
+  }
+}

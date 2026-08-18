@@ -1,0 +1,46 @@
+{
+  "1": {
+    "inputs": {
+      "model": [
+        "3",
+        0
+      ],
+      "image": [
+        "18",
+        0
+      ],
+      "text_query": "__SEG_TEXT_PROMPT__",
+      "threshold": "__SEG_THRESHOLD__",
+      "single_box_mode": false,
+      "single_box_per_prompt_mode": true,
+      "output_format": "dict_with_data",
+      "size": "__SEG_DETECT_SIZE__",
+      "label_limit": 3,
+      "seed": "__SEG_SEED__",
+      "seed_mode": "fixed"
+    },
+    "class_type": "GroundingDetector"
+  },
+  "3": {
+    "inputs": {
+      "model_name": "__SEG_DETECT_MODEL__"
+    },
+    "class_type": "GroundingModelLoader"
+  },
+  "18": {
+    "inputs": {
+      "image": "__SEG_INPUT__",
+      "upload": "image"
+    },
+    "class_type": "LoadImage"
+  },
+  "19": {
+    "inputs": {
+      "images": [
+        "1",
+        1
+      ]
+    },
+    "class_type": "PreviewImage"
+  }
+}

@@ -1,5 +1,6 @@
 param(
-    [switch]$Deep
+    [switch]$Deep,
+    [switch]$Fix
 )
 
 $ErrorActionPreference = "Stop"
@@ -66,6 +67,33 @@ try {
 $baseUrl = Read-ComfyBaseUrl -ProjectRoot $root
 if (Test-ComfyHealth -BaseUrl $baseUrl) {
     Write-Host "ComfyUI API: OK ($baseUrl)" -ForegroundColor Green
+    $infoUrl = ($baseUrl.TrimEnd("/") + "/object_info")
+    try {
+        $info = Invoke-RestMethod -Uri $infoUrl -TimeoutSec 15
+        if ($info.SAM3_Detect) {
+            Write-Host "Live SAM3 node: OK (SAM3_Detect)" -ForegroundColor Green
+        } elseif ($info.LoadSAM3Model) {
+            Write-Host "Live SAM3 node: OK (LoadSAM3Model)" -ForegroundColor Green
+        } else {
+            Write-Warning "Live ComfyUI has neither SAM3_Detect nor LoadSAM3Model"
+        }
+        $ckpts = @()
+        if ($info.CheckpointLoaderSimple -and $info.CheckpointLoaderSimple.input.required.ckpt_name) {
+            $ckpts = @($info.CheckpointLoaderSimple.input.required.ckpt_name[0])
+        }
+        $samCkpt = $ckpts | Where-Object { $_ -match 'sam3' }
+        if ($samCkpt) {
+            Write-Host "SAM3 checkpoint: OK ($($samCkpt -join ', '))" -ForegroundColor Green
+        } else {
+            Write-Warning "No sam3* checkpoint in ComfyUI models/checkpoints. Need sam3.1_multiplex_fp16.safetensors on the Comfy host."
+            if ($Fix) {
+                $layoutFix = Find-ComfyLayout -ProjectRoot $root
+                Ensure-Sam3Checkpoint -Layout $layoutFix -ProjectRoot $root -Required
+            }
+        }
+    } catch {
+        Write-Warning "Could not read ComfyUI /object_info: $($_.Exception.Message)"
+    }
 } else {
     Write-Warning "ComfyUI API did not respond at $baseUrl"
 }

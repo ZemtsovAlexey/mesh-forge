@@ -14,7 +14,7 @@ import httpx
 
 from mesh_forge import progress as prog
 from mesh_forge.config import load_config, normalize_comfyui_base_url
-from mesh_forge.domain import ImageArtifact, ImageSet, MeshArtifact, TextToMeshResult
+from mesh_forge.domain import ImageArtifact, ImageSet, MeshArtifact, SegmentationArtifact, TextToMeshResult
 from mesh_forge.runtime import get_gpu_scheduler
 
 logger = logging.getLogger("mesh_forge.comfyui")
@@ -158,6 +158,60 @@ class ComfyUiClient:
                         work_dir=work_dir,
                         run_id=run_id,
                         seed=seed,
+                    )
+        except httpx.HTTPStatusError as exc:
+            raise RuntimeError(self._format_prompt_error(exc)) from exc
+        except httpx.HTTPError as exc:
+            raise RuntimeError(
+                f"ComfyUI is unavailable at {self.base_url}. "
+                "Start ComfyUI on the server and make sure its API is reachable."
+            ) from exc
+
+    def segment_view_by_text(
+        self,
+        prompt: str,
+        image_path: Path,
+        work_dir: Path,
+        *,
+        project_id: str,
+        max_detections: int = 1,
+        confidence_threshold: float | None = None,
+    ) -> SegmentationArtifact:
+        """Single-view text segmentation via SAM3Grounding."""
+        self._refresh()
+        if not self.config.comfyui.enabled:
+            raise RuntimeError("ComfyUI is disabled in config.yaml")
+        if not image_path.is_file():
+            raise FileNotFoundError(f"Segmentation image missing: {image_path}")
+
+        work_dir.mkdir(parents=True, exist_ok=True)
+        run_id = uuid.uuid4().hex[:8]
+
+        try:
+            with self._scheduler.acquire("ComfyUI segmentation", kind="comfy", project_id=project_id):
+                with httpx.Client(timeout=180.0) as client:
+                    prog.update(project_id, 18, "seg-upload")
+                    uploaded_image = self._upload_input_image(
+                        client, image_path, subfolder=f"meshforge/{run_id}"
+                    )
+                    prog.update(project_id, 46, "seg-run")
+                    workflow = self._load_segmentation_text_workflow(
+                        self.config.segmentation_segment_workflow_path,
+                        uploaded_image=uploaded_image,
+                        prompt=prompt,
+                        confidence_threshold=confidence_threshold,
+                        max_detections=max_detections,
+                    )
+                    workflow = self._bind_native_sam3_checkpoint(client, workflow)
+                    history = self._submit_workflow(client, workflow)
+                    prog.update(project_id, 78, "seg-download")
+                    return self._collect_segmentation_artifact(
+                        client,
+                        history=history,
+                        output_dir=work_dir / "segmentation",
+                        visualization_node="3",
+                        mask_node="4",
+                        grounding_node="15",
                     )
         except httpx.HTTPStatusError as exc:
             raise RuntimeError(self._format_prompt_error(exc)) from exc
@@ -775,6 +829,110 @@ class ComfyUiClient:
         }
         return self._render_workflow(workflow, replacements)
 
+    def _load_segmentation_text_workflow(
+        self,
+        workflow_path: Path,
+        *,
+        uploaded_image: str,
+        prompt: str,
+        confidence_threshold: float | None,
+        max_detections: int,
+    ) -> dict[str, Any]:
+        workflow = self._read_workflow(workflow_path)
+        seg = self.config.segmentation
+        precision_map = {
+            "float16": "fp16",
+            "fp16": "fp16",
+            "bfloat16": "bf16",
+            "bf16": "bf16",
+            "float32": "fp32",
+            "fp32": "fp32",
+            "auto": "auto",
+        }
+        replacements: dict[str, Any] = {
+            "__SEG_INPUT__": uploaded_image,
+            "__SEG_TEXT_PROMPT__": (prompt or "").strip(),
+            "__SEG_THRESHOLD__": float(
+                confidence_threshold
+                if confidence_threshold is not None
+                else float(seg.mask_threshold or 0.2)
+            ),
+            "__SEG_MAX_DETECTIONS__": int(max(-1, max_detections)),
+            "__SEG_MODEL_PRECISION__": precision_map.get(
+                str(seg.detector_dtype or "auto").strip().lower(),
+                "auto",
+            ),
+            "__SEG_CHECKPOINT__": str(
+                seg.segmenter_model or "sam3.1_multiplex_fp16.safetensors"
+            ).strip(),
+        }
+        logger.info("segmentation text prompt=%s image=%s", (prompt or "")[:120], uploaded_image)
+        return self._render_workflow(workflow, replacements)
+
+    def _bind_native_sam3_checkpoint(
+        self,
+        client: httpx.Client,
+        workflow: dict[str, Any],
+    ) -> dict[str, Any]:
+        uses_native = any(
+            str((node or {}).get("class_type") or "") == "SAM3_Detect" for node in workflow.values()
+        )
+        uses_custom = any(
+            str((node or {}).get("class_type") or "") in {"LoadSAM3Model", "SAM3Grounding"}
+            for node in workflow.values()
+        )
+        info = self._object_info(client)
+        available = set(info)
+        if uses_native and "SAM3_Detect" not in available:
+            raise RuntimeError(
+                "ComfyUI has no native SAM3_Detect node. Update ComfyUI or switch "
+                "segmentation.workflow_segment to mesh_forge/workflows/seg_text_view_custom.json."
+            )
+        if uses_custom and "LoadSAM3Model" not in available:
+            raise RuntimeError(
+                "ComfyUI has no LoadSAM3Model node. This host uses native SAM3_Detect instead. "
+                "Point segmentation.workflow_segment at mesh_forge/workflows/seg_text_view.json."
+            )
+        if not uses_native:
+            return workflow
+        checkpoint = self._resolve_sam3_checkpoint(info)
+        for node in workflow.values():
+            if str((node or {}).get("class_type") or "") != "CheckpointLoaderSimple":
+                continue
+            inputs = node.setdefault("inputs", {})
+            inputs["ckpt_name"] = checkpoint
+        return workflow
+
+    def _object_info(self, client: httpx.Client) -> dict[str, Any]:
+        response = client.get(f"{self.base_url}/object_info")
+        response.raise_for_status()
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    def _resolve_sam3_checkpoint(self, object_info: dict[str, Any]) -> str:
+        wanted = str(self.config.segmentation.segmenter_model or "sam3.1_multiplex_fp16.safetensors").strip()
+        names = self._checkpoint_names(object_info)
+        if wanted and wanted in names:
+            return wanted
+        matches = [name for name in names if "sam3" in str(name).lower()]
+        if matches:
+            logger.info("using SAM3 checkpoint %s", matches[0])
+            return matches[0]
+        raise RuntimeError(
+            "Native SAM3_Detect is available, but no SAM3 checkpoint is in ComfyUI models/checkpoints. "
+            "Download sam3.1_multiplex_fp16.safetensors from "
+            "https://huggingface.co/Comfy-Org/sam3.1/resolve/main/checkpoints/sam3.1_multiplex_fp16.safetensors "
+            f"onto the ComfyUI host ({self.base_url}) and restart Comfy if needed."
+        )
+
+    def _checkpoint_names(self, object_info: dict[str, Any]) -> list[str]:
+        node = object_info.get("CheckpointLoaderSimple") or {}
+        required = ((node.get("input") or {}).get("required") or {})
+        spec = required.get("ckpt_name")
+        if isinstance(spec, list) and spec and isinstance(spec[0], list):
+            return [str(name) for name in spec[0]]
+        return []
+
     def _assign_view_paths(self, images: ImageSet) -> dict[str, Path]:
         labeled: dict[str, Path] = {}
         unlabeled: list[Path] = []
@@ -897,6 +1055,188 @@ class ComfyUiClient:
         dest = output_dir / f"mesh{suffix}"
         self._download_output(client, record, dest)
         return MeshArtifact(path=dest, source="comfyui", notes="ComfyUI text-to-mesh output", label="mesh_raw", stage="mesh")
+
+    def _collect_segmentation_artifact(
+        self,
+        client: httpx.Client,
+        *,
+        history: dict[str, Any],
+        output_dir: Path,
+        visualization_node: str,
+        mask_node: str,
+        grounding_node: str = "15",
+    ) -> SegmentationArtifact:
+        output_dir.mkdir(parents=True, exist_ok=True)
+        outputs = history.get("outputs", {})
+
+        vis_data = outputs.get(str(visualization_node)) or {}
+        vis_record = self._first_output_record(vis_data)
+        if not vis_record:
+            raise RuntimeError("ComfyUI segmentation produced no visualization image")
+        vis_suffix = Path(vis_record["filename"]).suffix.lower() or ".png"
+        vis_dest = output_dir / f"visualization{vis_suffix}"
+        self._download_output(client, vis_record, vis_dest)
+
+        mask_data = outputs.get(str(mask_node)) or {}
+        mask_record = self._first_output_record(mask_data)
+        if not mask_record:
+            raise RuntimeError("ComfyUI segmentation produced no mask preview")
+        mask_suffix = Path(mask_record["filename"]).suffix.lower() or ".png"
+        mask_dest = output_dir / f"mask{mask_suffix}"
+        self._download_output(client, mask_record, mask_dest)
+
+        width, height = 1, 1
+        try:
+            from PIL import Image
+
+            with Image.open(mask_dest) as image:
+                width, height = image.size
+        except Exception:
+            pass
+        boxes, scores = self._parse_sam3_detections(
+            outputs,
+            grounding_node=grounding_node,
+            width=width,
+            height=height,
+        )
+
+        return SegmentationArtifact(
+            mask=ImageArtifact(path=mask_dest, label="mask", role="mask", stage="segmentation"),
+            visualization=ImageArtifact(
+                path=vis_dest,
+                label="segmentation",
+                role="preview",
+                stage="segmentation",
+            ),
+            boxes=boxes,
+            scores=scores,
+        )
+
+    def _parse_sam3_detections(
+        self,
+        outputs: dict[str, Any],
+        *,
+        grounding_node: str,
+        width: int,
+        height: int,
+    ) -> tuple[list[dict[str, float]], list[float]]:
+        node_data = outputs.get(str(grounding_node)) if isinstance(outputs, dict) else None
+        if not isinstance(node_data, dict):
+            node_data = {}
+            for payload in (outputs or {}).values():
+                if not isinstance(payload, dict):
+                    continue
+                keys = {str(key).lower() for key in payload}
+                if keys & {"boxes", "box", "bboxes", "scores", "score"}:
+                    node_data = payload
+                    break
+        raw_boxes = None
+        raw_scores = None
+        for key, value in node_data.items():
+            name = str(key).lower()
+            parsed = self._jsonish(value)
+            if name in {"boxes", "box", "bboxes"}:
+                raw_boxes = parsed
+            elif name in {"scores", "score", "confidences"}:
+                raw_scores = parsed
+        boxes = self._normalize_sam3_boxes(raw_boxes, width=width, height=height)
+        scores: list[float] = []
+        if isinstance(raw_scores, (int, float)):
+            scores = [float(raw_scores)]
+        elif isinstance(raw_scores, list):
+            for item in raw_scores:
+                try:
+                    scores.append(float(item))
+                except (TypeError, ValueError):
+                    continue
+        if not scores:
+            scores = [
+                float(item.get("score"))
+                for item in self._flatten_boxes(raw_boxes)
+                if isinstance(item, dict) and item.get("score") is not None
+            ]
+        if scores and len(scores) < len(boxes):
+            scores.extend([scores[-1]] * (len(boxes) - len(scores)))
+        return boxes, scores[: len(boxes)] if boxes else scores
+
+    def _jsonish(self, value: Any) -> Any:
+        if isinstance(value, str):
+            text = value.strip()
+            if not text:
+                return value
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return value
+        if isinstance(value, list) and len(value) == 1 and isinstance(value[0], str):
+            return self._jsonish(value[0])
+        return value
+
+    def _normalize_sam3_boxes(
+        self,
+        raw_boxes: Any,
+        *,
+        width: int,
+        height: int,
+    ) -> list[dict[str, float]]:
+        items = self._flatten_boxes(raw_boxes)
+        out: list[dict[str, float]] = []
+        w = max(1.0, float(width or 1))
+        h = max(1.0, float(height or 1))
+        for item in items:
+            box = self._box_xyxy(item)
+            if box is None:
+                continue
+            x0, y0, x1, y1 = box
+            if max(x0, y0, x1, y1) > 1.5:
+                x0 /= w
+                x1 /= w
+                y0 /= h
+                y1 /= h
+            x0 = min(max(x0, 0.0), 1.0)
+            y0 = min(max(y0, 0.0), 1.0)
+            x1 = min(max(x1, 0.0), 1.0)
+            y1 = min(max(y1, 0.0), 1.0)
+            if x1 < x0:
+                x0, x1 = x1, x0
+            if y1 < y0:
+                y0, y1 = y1, y0
+            if x1 - x0 < 0.002 or y1 - y0 < 0.002:
+                continue
+            out.append({"x0": x0, "y0": y0, "x1": x1, "y1": y1})
+        return out
+
+    def _flatten_boxes(self, raw_boxes: Any) -> list[Any]:
+        if raw_boxes is None:
+            return []
+        if isinstance(raw_boxes, dict):
+            return [raw_boxes]
+        if not isinstance(raw_boxes, list):
+            return []
+        out: list[Any] = []
+        for item in raw_boxes:
+            if isinstance(item, list) and item and not isinstance(item[0], (int, float)):
+                out.extend(self._flatten_boxes(item))
+            else:
+                out.append(item)
+        return out
+
+    def _box_xyxy(self, item: Any) -> tuple[float, float, float, float] | None:
+        if isinstance(item, dict):
+            if all(key in item for key in ("x0", "y0", "x1", "y1")):
+                return float(item["x0"]), float(item["y0"]), float(item["x1"]), float(item["y1"])
+            if all(key in item for key in ("x", "y", "width", "height")):
+                x0 = float(item["x"])
+                y0 = float(item["y"])
+                return x0, y0, x0 + float(item["width"]), y0 + float(item["height"])
+            coords = item.get("xyxy") or item.get("bbox") or item.get("box")
+            return self._box_xyxy(coords)
+        if isinstance(item, (list, tuple)) and len(item) >= 4:
+            try:
+                return float(item[0]), float(item[1]), float(item[2]), float(item[3])
+            except (TypeError, ValueError):
+                return None
+        return None
 
     def _upload_views(self, client: httpx.Client, views: ImageSet, *, subfolder: str) -> dict[str, str]:
         uploaded: dict[str, str] = {}
