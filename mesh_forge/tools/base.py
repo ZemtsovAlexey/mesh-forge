@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib
 import pkgutil
+from functools import wraps
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -31,6 +32,7 @@ class MeshTool:
     name: ClassVar[str] = ""
     title: ClassVar[str] = ""
     heavy: ClassVar[bool] = False
+    expose: ClassVar[bool] = True
     stages: ClassVar[dict[str, str]] = VIEW_STAGES
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
@@ -47,7 +49,17 @@ class MeshTool:
         raise NotImplementedError
 
     def to_pydantic_tool(self) -> Tool:
-        fn = self.run
+        run = self.run
+        name = self.name
+
+        @wraps(run)
+        def tracked(ctx: RunContext, *args: Any, **kwargs: Any) -> Any:
+            deps = getattr(ctx, "deps", None)
+            if deps is not None and hasattr(deps, "note_tool"):
+                deps.note_tool(name)
+            return run(ctx, *args, **kwargs)
+
+        fn = tracked
         if self.heavy:
             fn = in_thread(fn)
         return Tool(
@@ -69,7 +81,7 @@ def discover_tools() -> None:
 
 def registered_tools() -> list[Tool]:
     discover_tools()
-    return [cls().to_pydantic_tool() for cls in _REGISTRY.values()]
+    return [cls().to_pydantic_tool() for cls in _REGISTRY.values() if cls.expose]
 
 
 def tool_title(name: str) -> str:

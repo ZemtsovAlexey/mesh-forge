@@ -320,8 +320,9 @@ class ComfyUiClient:
         *,
         project_id: str,
         count: int = 4,
+        seed: int | None = None,
     ) -> TextToMeshResult:
-        """Preserve identity: img2img the front, then Zero123 orbits → mesh."""
+        """Preserve identity: img2img the baked front, cut studio, single-view Hunyuan (no Zero123)."""
         self._refresh()
         if not self.config.comfyui.enabled:
             raise RuntimeError("ComfyUI is disabled in config.yaml")
@@ -345,6 +346,7 @@ class ComfyUiClient:
                         prompt=prompt,
                         uploaded_anchor=uploaded_anchor,
                         run_id=run_id,
+                        seed=seed,
                     )
                     edit_history = self._submit_workflow(client, edit_wf)
                     prog.update(project_id, 34, "views")
@@ -354,27 +356,36 @@ class ComfyUiClient:
                         output_dir=work_dir / "views",
                         output_node=pack.guided_front_output,
                     )
-                    views = self._generate_zero123_orbits(
-                        client,
-                        pack=pack,
-                        front_views=views,
-                        work_dir=work_dir,
-                        run_id=run_id,
-                    )
+                    front = views.get("front") or (views.items[0] if views.items else None)
+                    if front is None:
+                        raise RuntimeError("Guided edit produced no front image")
+                    cleaned = work_dir / "views" / "front_clean.png"
+                    try:
+                        from mesh_forge.ops.background import cut_and_flatten
 
+                        cut_and_flatten(front.path, cleaned)
+                        front = ImageArtifact(
+                            path=cleaned, label="front", role="view", stage="guided"
+                        )
+                        views = ImageSet(items=[front])
+                    except Exception:
+                        logger.warning("guided-edit background cut failed; using raw front", exc_info=True)
                     prog.update(project_id, 62, "mesh")
-                    uploaded = self._upload_views(client, views, subfolder=f"meshforge/{run_id}")
-                    mesh_workflow = self._load_multiview_to_mesh_workflow(
-                        pack.multiview_to_mesh,
-                        uploaded_views=uploaded,
+                    uploaded_front = self._upload_input_image(
+                        client, front.path, subfolder=f"meshforge/{run_id}"
+                    )
+                    mesh_workflow = self._load_image_to_mesh_workflow(
+                        pack.image_to_mesh,
+                        uploaded_front=uploaded_front,
                         run_id=run_id,
+                        seed=seed,
                     )
                     mesh_history = self._submit_workflow(client, mesh_workflow)
                     mesh = self._collect_mesh_artifact(
                         client,
                         history=mesh_history,
                         output_dir=work_dir / "mesh",
-                        output_node=pack.mesh_output,
+                        output_node=pack.image_mesh_output,
                     )
         except httpx.HTTPStatusError as exc:
             raise RuntimeError(self._format_prompt_error(exc)) from exc
@@ -398,8 +409,8 @@ class ComfyUiClient:
         workflow = self._read_workflow(workflow_path)
         base_seed = seed if seed is not None else random.randint(1, 2**31 - 1)
         c = self.config.comfyui
-        edit_denoise = float(getattr(c, "edit_denoise", 0.28) or 0.28)
-        edit_denoise = min(max(edit_denoise, 0.12), 0.55)
+        edit_denoise = float(getattr(c, "edit_denoise", 0.16) or 0.16)
+        edit_denoise = min(max(edit_denoise, 0.10), 0.22)
         negative = self._build_view_negative(c.negative_prompt)
         subject = self._normalize_subject_prompt(prompt)
         replacements: dict[str, Any] = {

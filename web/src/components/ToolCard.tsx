@@ -1,6 +1,8 @@
 import { useState } from "react";
 import type { Artifact, ToolCall } from "../types";
+import type { MeshPick } from "./MeshViewer";
 import ArtifactBlock from "./ArtifactBlock";
+import ThinkingBlock from "./ThinkingBlock";
 
 function cleanSummary(value: string): string {
   const text = value.trim();
@@ -50,9 +52,15 @@ function extraKnobs(tool: ToolCall): [string, string][] {
 export default function ToolCard({
   tool,
   onReply,
+  pick,
+  onPick,
+  onViewportAim,
 }: {
   tool: ToolCall;
   onReply?: (art: Artifact) => void;
+  pick?: MeshPick | null;
+  onPick?: (pick: MeshPick) => void;
+  onViewportAim?: (aim: { x: number; y: number; views: string }) => void;
 }) {
   const [open, setOpen] = useState(false);
   const knobs = extraKnobs(tool);
@@ -60,6 +68,7 @@ export default function ToolCard({
   const percent = Math.min(100, Math.max(0, Math.round(tool.progress || 0)));
   const prompt = promptFromArgs(tool.args);
   const summary = cleanSummary(tool.summary || "");
+  const thinking = (tool.thinking || "").trim();
   const preview = prompt || summary;
   const hasDetails = knobs.length > 0 || Boolean(preview);
   const longSummary = Boolean(prompt && summary && summary !== prompt);
@@ -89,6 +98,7 @@ export default function ToolCard({
           <span style={{ width: `${percent > 0 ? percent : 14}%` }} />
         </div>
       ) : null}
+      {thinking ? <ThinkingBlock text={thinking} live={running && !summary} /> : null}
       {hasDetails ? (
         <div className="step-body">
           {prompt ? <div className="step-prompt">{prompt}</div> : null}
@@ -105,7 +115,7 @@ export default function ToolCard({
           {open && longSummary ? <div className="step-note">{summary}</div> : null}
         </div>
       ) : null}
-      <ArtifactBlock artifacts={tool.artifacts} onReply={onReply} />
+      <ArtifactBlock artifacts={tool.artifacts} onReply={onReply} pick={pick} onPick={onPick} onViewportAim={onViewportAim} />
     </div>
   );
 }

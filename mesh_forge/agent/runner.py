@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import datetime, timezone
 from typing import Any
 
@@ -16,6 +16,8 @@ from pydantic_ai.messages import (
     PartStartEvent,
     TextPart,
     TextPartDelta,
+    ThinkingPart,
+    ThinkingPartDelta,
     ToolCallPart,
 )
 
@@ -63,6 +65,23 @@ def request_stop(chat_id: str) -> None:
     get_gpu_scheduler().wake()
 
 
+def _cancelled(chat_id: str, token: CancellationToken | None = None) -> bool:
+    if prog.is_cancelled(chat_id):
+        return True
+    if token is None:
+        return False
+    for name in ("is_cancelled", "cancelled"):
+        attr = getattr(token, name, None)
+        if callable(attr):
+            try:
+                return bool(attr())
+            except Exception:
+                continue
+        if isinstance(attr, bool) and attr:
+            return True
+    return False
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -94,16 +113,23 @@ class ChatRunner:
         reply_artifact_ids: list[str] | None = None,
     ) -> AsyncIterator[str]:
         lock = _chat_lock(chat_id)
-        while lock.locked():
-            yield _sse({"type": "status", "stage": "wait_turn"})
+        if lock.locked():
+            request_stop(chat_id)
+            yield _sse({"type": "status", "stage": "stop_previous"})
             try:
-                await asyncio.wait_for(lock.acquire(), timeout=20)
-                break
+                await asyncio.wait_for(lock.acquire(), timeout=12)
             except TimeoutError:
-                continue
+                yield _sse(
+                    {
+                        "type": "error",
+                        "message": "Предыдущий ход ещё останавливается. Подожди секунду и отправь снова.",
+                    }
+                )
+                return
         else:
             await lock.acquire()
         try:
+            prog.clear(chat_id)
             async for chunk in self._stream_turn(
                 chat_id,
                 text,
@@ -129,6 +155,7 @@ class ChatRunner:
         messages = self.store.load_messages(chat_id)
         reply_ids = [str(x).strip() for x in (reply_artifact_ids or []) if str(x).strip()]
         cited = cited_artifacts(messages, reply_to, reply_ids)
+        meta = self.store.get_meta(chat_id)
         user_msg = UiMessage(
             id=uuid.uuid4().hex[:10],
             role="user",
@@ -137,6 +164,9 @@ class ChatRunner:
             attachments=attachments,
             reply_to=(reply_to or "").strip(),
             reply_artifact_ids=reply_ids,
+            mesh_region=meta.mesh_region,
+            mesh_pick=list(meta.mesh_pick or []),
+            mesh_topo=dict(meta.mesh_topo or {}),
         )
         assistant_msg = UiMessage(
             id=uuid.uuid4().hex[:10],
@@ -147,6 +177,8 @@ class ChatRunner:
         messages.append(user_msg)
         messages.append(assistant_msg)
         self.store.save_messages(chat_id, messages)
+        if user_msg.mesh_pick or user_msg.mesh_region:
+            self.store.clear_mesh_pick(chat_id)
 
         yield _sse({"type": "user", "message": user_msg.model_dump()})
         yield _sse({"type": "assistant_start", "id": assistant_msg.id})
@@ -201,13 +233,18 @@ class ChatRunner:
                                 except Exception:
                                     logger.exception("failed to persist agent messages")
                 await bus.put({"type": "done"})
+            except asyncio.CancelledError:
+                await bus.put({"type": "error", "message": "Остановлено пользователем"})
+                await bus.put({"type": "done"})
             except Exception as exc:
                 logger.exception("agent run failed")
-                await bus.put({"type": "error", "message": str(exc)})
+                msg = "Остановлено пользователем" if _cancelled(chat_id, token) else str(exc)
+                await bus.put({"type": "error", "message": msg})
                 await bus.put({"type": "done"})
 
         task = asyncio.create_task(run_agent())
         tools_by_id: dict[str, ToolCallRecord] = {}
+        think_persist = 0
 
         def persist() -> None:
             try:
@@ -220,6 +257,10 @@ class ChatRunner:
                 try:
                     event = await asyncio.wait_for(bus.get(), timeout=0.45)
                 except TimeoutError:
+                    if _cancelled(chat_id, token):
+                        yield _sse({"type": "error", "message": "Остановлено пользователем"})
+                        yield _sse({"type": "done"})
+                        break
                     state = prog.get(chat_id)
                     if state and state.active:
                         last = assistant_msg.tools[-1] if assistant_msg.tools else None
@@ -258,22 +299,41 @@ class ChatRunner:
                         rec = assistant_msg.tools[-1]
                     if rec is not None:
                         rec.status = "error" if event.get("ok") is False else "ok"
-                        rec.summary = str(event.get("summary") or "")[:2000]
+                        incoming = str(event.get("summary") or "")
+                        if len(incoming) > len(rec.summary):
+                            rec.summary = incoming[:8000]
+                        elif not rec.summary:
+                            rec.summary = incoming[:8000]
                         knobs = _extract_knobs(rec.summary)
                         if knobs:
                             rec.knobs = knobs
                             event["knobs"] = knobs
                     dirty = True
                 elif etype == "tool_progress":
-                    rec = None
-                    if assistant_msg.tools:
-                        last = assistant_msg.tools[-1]
-                        if last.status == "running":
-                            rec = last
+                    rec = _running_tool(assistant_msg)
                     if rec is not None:
                         rec.progress = float(event.get("percent") or rec.progress)
                         rec.stage = tool_stage_label(rec.name, str(event.get("stage") or rec.stage))
                         event["stage"] = rec.stage
+                elif etype == "tool_thinking_delta":
+                    rec = _append_tool_delta(assistant_msg, "thinking", str(event.get("delta") or ""))
+                    if rec is not None:
+                        think_persist += len(str(event.get("delta") or ""))
+                        if think_persist >= 800:
+                            dirty = True
+                            think_persist = 0
+                elif etype == "tool_text_delta":
+                    rec = _append_tool_delta(assistant_msg, "text", str(event.get("delta") or ""))
+                    if rec is not None:
+                        think_persist += len(str(event.get("delta") or ""))
+                        if think_persist >= 400:
+                            dirty = True
+                            think_persist = 0
+                elif etype == "tool_text":
+                    rec = _running_tool(assistant_msg)
+                    if rec is not None:
+                        rec.summary = str(event.get("text") or "")
+                        dirty = True
                 elif etype == "artifact":
                     art = Artifact.model_validate(event["artifact"])
                     tool_id = event["artifact"].get("tool_id") or (
@@ -294,6 +354,13 @@ class ChatRunner:
                     dirty = True
                 elif etype == "text_delta":
                     _append_text(assistant_msg, str(event.get("delta") or ""))
+                elif etype == "thinking_delta":
+                    delta = str(event.get("delta") or "")
+                    _append_thinking(assistant_msg, delta)
+                    think_persist += len(delta)
+                    if think_persist >= 800:
+                        dirty = True
+                        think_persist = 0
                 elif etype == "error":
                     if not assistant_msg.content:
                         assistant_msg.content = str(event.get("message") or "Ошибка")
@@ -316,15 +383,30 @@ class ChatRunner:
             if not task.done():
                 task.cancel()
             try:
-                await task
-            except Exception:
+                await asyncio.wait_for(task, timeout=1.5)
+            except (TimeoutError, asyncio.CancelledError, Exception):
                 pass
-            still = [rec for rec in assistant_msg.tools if rec.status == "running"]
-            _fail_running_tools(assistant_msg.tools, "Прервано")
-            for rec in still:
-                yield _sse({"type": "tool_end", "id": rec.id, "ok": False, "summary": rec.summary})
-            prog.finish(chat_id, ok=True)
-            persist()
+            final_events = _finalize_interrupted_turn(chat_id, assistant_msg, persist)
+            for event in final_events:
+                yield _sse(event)
+
+
+def _running_tool(message: UiMessage) -> ToolCallRecord | None:
+    if not message.tools:
+        return None
+    last = message.tools[-1]
+    return last if last.status == "running" else None
+
+
+def _append_tool_delta(message: UiMessage, kind: str, delta: str) -> ToolCallRecord | None:
+    rec = _running_tool(message)
+    if rec is None or not delta:
+        return None
+    if kind == "thinking":
+        rec.thinking += delta
+    else:
+        rec.summary += delta
+    return rec
 
 
 def _append_text(message: UiMessage, delta: str) -> None:
@@ -337,6 +419,15 @@ def _append_text(message: UiMessage, delta: str) -> None:
         message.blocks.append(MessageBlock(kind="text", text=delta))
 
 
+def _append_thinking(message: UiMessage, delta: str) -> None:
+    if not delta:
+        return
+    if message.blocks and message.blocks[-1].kind == "thinking":
+        message.blocks[-1].text += delta
+    else:
+        message.blocks.append(MessageBlock(kind="thinking", text=delta))
+
+
 def _append_tool_block(message: UiMessage, tool_id: str) -> None:
     message.blocks.append(MessageBlock(kind="tool", tool_id=tool_id))
 
@@ -347,6 +438,18 @@ def _fail_running_tools(tools: list[ToolCallRecord], message: str) -> None:
         if rec.status == "running":
             rec.status = "error"
             rec.summary = rec.summary or note
+
+
+def _finalize_interrupted_turn(
+    chat_id: str,
+    message: UiMessage,
+    persist: Callable[[], None],
+) -> list[dict[str, Any]]:
+    still = [rec for rec in message.tools if rec.status == "running"]
+    _fail_running_tools(message.tools, "Прервано")
+    prog.finish(chat_id, ok=True)
+    persist()
+    return [{"type": "tool_end", "id": rec.id, "ok": False, "summary": rec.summary} for rec in still]
 
 
 def _tool_succeeded(content: str) -> bool:
@@ -406,10 +509,20 @@ def _map_agent_event(event: object) -> dict[str, Any] | None:
             if text:
                 return {"type": "text_delta", "delta": text}
             return None
+        if isinstance(event, PartStartEvent) and isinstance(event.part, ThinkingPart):
+            text = event.part.content or ""
+            if text:
+                return {"type": "thinking_delta", "delta": text}
+            return None
         if isinstance(event, PartDeltaEvent) and isinstance(event.delta, TextPartDelta):
             delta = event.delta.content_delta or ""
             if delta:
                 return {"type": "text_delta", "delta": delta}
+            return None
+        if isinstance(event, PartDeltaEvent) and isinstance(event.delta, ThinkingPartDelta):
+            delta = event.delta.content_delta or ""
+            if delta:
+                return {"type": "thinking_delta", "delta": delta}
             return None
         if isinstance(event, FunctionToolCallEvent):
             part = event.part
@@ -425,7 +538,7 @@ def _map_agent_event(event: object) -> dict[str, Any] | None:
         if isinstance(event, FunctionToolResultEvent):
             call_id, content = _tool_return_text(event)
             ok = _tool_succeeded(content)
-            return {"type": "tool_end", "id": call_id, "ok": ok, "summary": content[:2000]}
+            return {"type": "tool_end", "id": call_id, "ok": ok, "summary": content[:8000]}
         if isinstance(event, ToolCallPart):
             return {
                 "type": "tool_start",

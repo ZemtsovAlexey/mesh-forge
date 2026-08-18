@@ -47,7 +47,9 @@ def start(project_id: str, operation: str, stage: str = "Старт…") -> None
     now = time.time()
     with _lock:
         prev = _jobs.get(project_id)
-        keep_cancel = bool(prev and prev.cancel_requested)
+        keep_cancel = bool(
+            prev and prev.cancel_requested and (prev.active or prev.operation == "cancel")
+        )
         _jobs[project_id] = ProgressState(
             project_id=project_id,
             operation=operation,
@@ -84,6 +86,7 @@ def finish(project_id: str, *, ok: bool = True, error: str | None = None) -> Non
         job.percent = 100.0 if ok else job.percent
         job.stage = "Готово" if ok else (error or "Ошибка")
         job.error = None if ok else (error or "Ошибка")
+        job.cancel_requested = False
         job.updated_at = time.time()
     if _current_project_id.get() == project_id:
         _current_project_id.set(None)
@@ -94,7 +97,7 @@ def request_cancel(project_id: str) -> bool:
     with _lock:
         job = _jobs.get(project_id)
         if not job:
-            # Still set a ghost flag so waiters that start late can see it.
+            # Race: Stop arrived before this turn called start().
             _jobs[project_id] = ProgressState(
                 project_id=project_id,
                 operation="cancel",
@@ -105,6 +108,8 @@ def request_cancel(project_id: str) -> bool:
                 started_at=time.time(),
                 updated_at=time.time(),
             )
+            return False
+        if not job.active:
             return False
         job.cancel_requested = True
         job.stage = "Остановка…"

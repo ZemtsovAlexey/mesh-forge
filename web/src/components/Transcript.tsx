@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { ChatMessage, ReplyTarget } from "../types";
+import type { MeshPick } from "./MeshViewer";
 import { replyPreview } from "../reply";
 import MessageView from "./MessageView";
 
@@ -7,10 +8,16 @@ export default function Transcript({
   messages,
   streaming,
   onReply,
+  pick,
+  onPick,
+  onViewportAim,
 }: {
   messages: ChatMessage[];
   streaming: boolean;
   onReply?: (target: ReplyTarget) => void;
+  pick?: MeshPick | null;
+  onPick?: (pick: MeshPick) => void;
+  onViewportAim?: (aim: { x: number; y: number; views: string }) => void;
 }) {
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -61,6 +68,9 @@ export default function Transcript({
                 quoted={quoted}
                 pending={pending}
                 onReply={onReply}
+                pick={pick}
+                onPick={onPick}
+                onViewportAim={onViewportAim}
               />
             );
           })

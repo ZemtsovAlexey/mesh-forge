@@ -376,6 +376,59 @@ button { cursor: pointer; }
   40% { opacity: 1; transform: translateY(-2px); }
 }
 
+.think-block {
+  margin: 4px 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--bg-elev);
+  overflow: hidden;
+}
+.think-block summary {
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  padding: 8px 12px;
+  color: var(--muted);
+  font-size: 13px;
+  user-select: none;
+}
+.think-block summary::-webkit-details-marker { display: none; }
+.think-block.live summary { color: var(--accent); }
+.think-wrap {
+  position: relative;
+}
+.think-body {
+  margin: 0;
+  padding: 0 12px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--muted);
+  max-height: 240px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.think-latest {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  border: 1px solid var(--border-strong);
+  background: var(--bg-elev);
+  color: var(--text);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.think-latest:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
 .steps { display: flex; flex-direction: column; gap: 4px; margin: 10px 0 6px; }
 .step { min-width: 0; }
 .step-row {
@@ -497,12 +550,73 @@ button { cursor: pointer; }
   background: #100f0d;
   max-width: 560px;
 }
-.mesh-canvas { width: 100%; height: 300px; }
+.mesh-canvas { width: 100%; height: 300px; position: relative; }
+.mesh-sleep { overflow: hidden; }
+.mesh-poster {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  background: #100f0d;
+  cursor: pointer;
+  display: block;
+}
+.mesh-poster img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+.mesh-poster-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #6a6156;
+  font-size: 13px;
+  letter-spacing: 0.08em;
+}
+.mesh-poster-hint {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: rgba(16, 15, 13, 0.72);
+  color: #d7c4a8;
+  font-size: 11px;
+}
 .mesh-actions {
   display: flex;
   gap: 8px;
   padding: 8px 10px;
   border-top: 1px solid var(--border);
+  align-items: center;
+}
+.mesh-hint {
+  font-size: 11px;
+  color: var(--faint);
+  margin-right: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.mesh-elem {
+  border: 1px solid var(--line, #3a342c);
+  background: transparent;
+  color: inherit;
+  border-radius: 999px;
+  padding: 1px 8px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.mesh-elem.active {
+  background: #3a342c;
+  color: #f0e6d4;
 }
 .mesh-wrap.fullscreen {
   position: fixed; inset: 0; z-index: 40; border-radius: 0; margin: 0; max-width: none;
@@ -551,6 +665,45 @@ button { cursor: pointer; }
 .composer textarea::placeholder { color: var(--faint); }
 .composer-bar { display: flex; align-items: center; gap: 4px; }
 .composer-bar .spacer { flex: 1; }
+.effort-wrap { position: relative; }
+.effort-btn {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: transparent;
+  border: 0;
+  color: var(--muted);
+  padding: 6px 8px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.effort-btn:hover { color: var(--text); background: var(--bg-hover); }
+.effort-menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  min-width: 176px;
+  background: #1c1a16;
+  border: 1px solid var(--border-strong);
+  border-radius: 12px;
+  padding: 8px 4px 4px;
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.4);
+  z-index: 8;
+}
+.effort-menu-title {
+  margin: 0 10px 6px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.effort-menu .picker-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.effort-check { color: var(--accent); font-size: 12px; }
 .attach-btn {
   display: flex;
   align-items: center;

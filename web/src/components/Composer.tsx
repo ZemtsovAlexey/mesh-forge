@@ -1,11 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import type { ReplyTarget } from "../types";
+import type { ReasoningEffort, ReplyTarget } from "../types";
+import { REASONING_EFFORTS } from "../types";
 
 export default function Composer({
   disabled,
   streaming,
   reply,
   onClearReply,
+  regionLabel,
+  onClearRegion,
+  effort,
+  onEffort,
   onSend,
   onStop,
 }: {
@@ -13,18 +18,33 @@ export default function Composer({
   streaming: boolean;
   reply?: ReplyTarget | null;
   onClearReply?: () => void;
+  regionLabel?: string;
+  onClearRegion?: () => void;
+  effort: ReasoningEffort;
+  onEffort: (value: ReasoningEffort) => void;
   onSend: (text: string, files: File[]) => void;
   onStop: () => void;
 }) {
   const [text, setText] = useState("");
   const [files, setFiles] = useState<File[]>([]);
+  const [effortOpen, setEffortOpen] = useState(false);
   const imageRef = useRef<HTMLInputElement>(null);
   const meshRef = useRef<HTMLInputElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const effortRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (reply) inputRef.current?.focus();
   }, [reply]);
+
+  useEffect(() => {
+    if (!effortOpen) return;
+    const onDown = (e: MouseEvent) => {
+      if (!effortRef.current?.contains(e.target as Node)) setEffortOpen(false);
+    };
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [effortOpen]);
 
   const submit = () => {
     const value = text.trim();
@@ -34,6 +54,8 @@ export default function Composer({
     setFiles([]);
   };
 
+  const effortLabel = REASONING_EFFORTS.find((item) => item.id === effort)?.label || "Средний";
+
   return (
     <div className="composer">
       <div className="composer-inner">
@@ -42,6 +64,15 @@ export default function Composer({
             <span className="reply-chip-label">Ответ на</span>
             <span className="reply-chip-text">{reply.preview}</span>
             <button type="button" className="btn ghost" onClick={onClearReply} aria-label="Снять ответ">
+              ×
+            </button>
+          </div>
+        ) : null}
+        {regionLabel ? (
+          <div className="reply-chip">
+            <span className="reply-chip-label">Место</span>
+            <span className="reply-chip-text">{regionLabel}</span>
+            <button type="button" className="btn ghost" onClick={onClearRegion} aria-label="Снять место">
               ×
             </button>
           </div>
@@ -65,7 +96,9 @@ export default function Composer({
         <textarea
           ref={inputRef}
           rows={2}
-          placeholder={reply ? "Что сделать с этим?" : "Опишите объект…"}
+          placeholder={
+            reply ? "Что сделать с этим?" : regionLabel ? "Что сделать с этим местом?" : "Опишите объект…"
+          }
           value={text}
           disabled={disabled}
           onChange={(e) => setText(e.target.value)}
@@ -77,7 +110,7 @@ export default function Composer({
             }
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              if (!streaming) submit();
+              submit();
             }
           }}
         />
@@ -113,23 +146,54 @@ export default function Composer({
             onChange={(e) => setFiles((cur) => [...cur, ...Array.from(e.target.files || [])])}
           />
           <span className="spacer" />
+          <div className="effort-wrap" ref={effortRef}>
+            <button
+              type="button"
+              className="effort-btn"
+              title="Уровень размышления"
+              onClick={() => setEffortOpen((cur) => !cur)}
+            >
+              {effortLabel}
+              <span className="picker-caret" aria-hidden>
+                {effortOpen ? "▴" : "▾"}
+              </span>
+            </button>
+            {effortOpen ? (
+              <div className="effort-menu">
+                <p className="effort-menu-title">Effort</p>
+                {REASONING_EFFORTS.map((item) => (
+                  <button
+                    type="button"
+                    key={item.id}
+                    className={`picker-item${item.id === effort ? " active" : ""}`}
+                    onClick={() => {
+                      onEffort(item.id);
+                      setEffortOpen(false);
+                    }}
+                  >
+                    {item.label}
+                    {item.id === effort ? <span className="effort-check">✓</span> : null}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
           {streaming ? (
             <button type="button" className="btn danger" onClick={onStop}>
               Стоп
             </button>
-          ) : (
-            <button
-              type="button"
-              className="send-btn"
-              disabled={disabled}
-              onClick={submit}
-              title="Отправить"
-            >
+          ) : null}
+          <button
+            type="button"
+            className="send-btn"
+            disabled={disabled}
+            onClick={submit}
+            title={streaming ? "Прервать и отправить" : "Отправить"}
+          >
               <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden>
                 <path d="M3 8h9M8.5 4.5 12.5 8l-4 3.5" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
             </button>
-          )}
         </div>
       </div>
     </div>

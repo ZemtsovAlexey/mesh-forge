@@ -25,6 +25,15 @@ _CAMERAS = {
     "right": (1.0, 0.18, 0.0),
     "top": (0.18, 1.0, 0.18),
 }
+_NAMED_YP = {
+    "viewer": (45.0, 25.0),
+    "front": (0.0, 10.0),
+    "right": (90.0, 10.0),
+    "back": (180.0, 10.0),
+    "left": (-90.0, 10.0),
+    "top": (25.0, 78.0),
+    "custom": (0.0, 15.0),
+}
 # Look-at as a fraction of seated extent (origin = XZ center, y=0 ground).
 _REGIONS = {
     "": (0.0, 0.45, 0.0),
@@ -46,6 +55,27 @@ def load_render_mesh(mesh_path: Path) -> trimesh.Trimesh:
     return load_mesh(mesh_path)
 
 
+_MASK_RED = (0.92, 0.20, 0.18)
+_MASK_RED_U8 = (235, 51, 46)
+_CLAY_U8 = (196, 165, 116)
+
+
+def export_mask_preview_glb(mesh: trimesh.Trimesh, face_mask: np.ndarray, out_path: Path) -> Path:
+    """GLB with clay mesh + red masked vertices for the chat 3D viewer."""
+    verts, faces, _ = _seat_for_viewer(mesh)
+    colored = trimesh.Trimesh(vertices=verts, faces=faces, process=False)
+    n_v = int(len(colored.vertices))
+    rgb = np.tile(np.array(_CLAY_U8, dtype=np.uint8), (n_v, 1))
+    drop = np.asarray(face_mask, dtype=bool).reshape(-1)
+    if drop.shape[0] == len(colored.faces) and np.any(drop):
+        idx = np.unique(np.asarray(colored.faces, dtype=np.int64)[drop].ravel())
+        rgb[idx] = np.array(_MASK_RED_U8, dtype=np.uint8)
+    colored.visual.vertex_colors = np.column_stack([rgb, np.full(n_v, 255, dtype=np.uint8)])
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    colored.export(out_path, file_type="glb")
+    return out_path
+
+
 def render_mesh_preview(
     mesh_path: Path,
     out_path: Path,
@@ -55,8 +85,13 @@ def render_mesh_preview(
     zoom: float = 1.0,
     region: str = "",
     mesh: trimesh.Trimesh | None = None,
+    pick: list[float] | tuple[float, ...] | None = None,
+    yaw: float | None = None,
+    pitch: float | None = None,
+    shift: tuple[float, float, float] | list[float] | None = None,
+    face_mask: np.ndarray | None = None,
 ) -> Path:
-    """Y-up preview. camera: viewer|front|left|right|back|top. zoom>1 closer. region crops look-at."""
+    """Y-up preview. Named camera or yaw/pitch (deg). zoom 0.6 far … 5 close. shift moves look-at."""
     loaded = mesh if mesh is not None else _load_render_mesh(mesh_path)
     return _render(
         loaded,
@@ -69,6 +104,11 @@ def render_mesh_preview(
         ground=True,
         zoom=zoom,
         region=region,
+        pick=pick,
+        yaw=yaw,
+        pitch=pitch,
+        shift=shift,
+        face_mask=face_mask,
     )
 
 
@@ -101,13 +141,30 @@ def _render(
     ground: bool = False,
     zoom: float = 1.0,
     region: str = "",
+    pick: list[float] | tuple[float, ...] | None = None,
+    yaw: float | None = None,
+    pitch: float | None = None,
+    shift: tuple[float, float, float] | list[float] | None = None,
+    face_mask: np.ndarray | None = None,
 ) -> Path:
     verts, faces, extent = _seat_for_viewer(mesh)
     raster = max(int(size) * 2, 2)
     if len(verts) == 0 or len(faces) == 0:
         image = np.tile(_hex_rgb(background), (raster, raster, 1))
         return _save_png(image, out_path, size=size)
-    eye, target = _camera_eye_target(extent, camera, pad=pad, zoom=zoom, region=region)
+    marker = _seated_pick_point(mesh, pick, extent) if pick is not None and len(pick) >= 3 else None
+    eye, target = _camera_eye_target(
+        extent,
+        camera,
+        pad=pad,
+        zoom=zoom,
+        region=region,
+        look_at=marker,
+        yaw=yaw,
+        pitch=pitch,
+        shift=shift,
+    )
+    mask = _aligned_face_mask(faces, face_mask)
     try:
         _render_open3d(
             verts,
@@ -119,6 +176,8 @@ def _render(
             color=color,
             background=background,
             ground=ground,
+            marker=None if mask is not None and np.any(mask) else marker,
+            face_mask=mask,
         )
         if raster != size:
             img = Image.open(out_path).convert("RGB")
@@ -126,10 +185,15 @@ def _render(
         return out_path
     except Exception as exc:
         logger.warning("Open3D preview failed (%s); using CPU rasterizer", exc)
-    verts, faces = _limit_cpu_faces(verts, faces)
+    painted = mask is not None and bool(np.any(mask))
+    if not painted:
+        verts, faces = _limit_cpu_faces(verts, faces)
+        mask = None
     rgb, depth = _project_points(verts, eye, target, raster)
     vert_rgb = _vertex_colors(verts, faces, color)
     image, zbuf = _rasterize(rgb, depth, faces, vert_rgb, raster, _hex_rgb(background))
+    if painted:
+        _overlay_mask_faces(image, zbuf, rgb, depth, faces, mask, raster)
     if ground:
         _draw_ground(image, zbuf, verts, eye, target, raster)
     return _save_png(image, out_path, size=size)
@@ -156,6 +220,42 @@ def _limit_cpu_faces(verts: np.ndarray, faces: np.ndarray) -> tuple[np.ndarray, 
     return verts, faces
 
 
+def _aligned_face_mask(faces: np.ndarray, face_mask: np.ndarray | None) -> np.ndarray | None:
+    if face_mask is None:
+        return None
+    mask = np.asarray(face_mask, dtype=bool).reshape(-1)
+    if mask.shape[0] != len(faces):
+        return None
+    return mask
+
+
+def _overlay_mask_faces(
+    image: np.ndarray,
+    zbuf: np.ndarray,
+    xy: np.ndarray,
+    depth: np.ndarray,
+    faces: np.ndarray,
+    face_mask: np.ndarray,
+    size: int,
+) -> None:
+    red = np.asarray(_MASK_RED, dtype=np.float64)
+    pts = xy[faces]
+    z = depth[faces]
+    for i in np.where(np.asarray(face_mask, dtype=bool))[0]:
+        _fill_triangle(image, zbuf, pts[i], np.maximum(z[i] * 0.97, 1e-6), red, size)
+
+
+def _tint_masked_vertices(
+    vert_rgb: np.ndarray,
+    faces: np.ndarray,
+    face_mask: np.ndarray | None,
+) -> None:
+    if face_mask is None or not np.any(face_mask):
+        return
+    idx = np.unique(np.asarray(faces, dtype=np.int64)[np.asarray(face_mask, dtype=bool)].ravel())
+    vert_rgb[idx] = np.asarray(_MASK_RED, dtype=np.float64)
+
+
 def _seat_for_viewer(mesh: trimesh.Trimesh) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Center on XZ and sit on y=0, matching MeshViewer.fit()."""
     verts = np.asarray(mesh.vertices, dtype=np.float64)
@@ -170,6 +270,37 @@ def _seat_for_viewer(mesh: trimesh.Trimesh) -> tuple[np.ndarray, np.ndarray, np.
     return seated, faces, extent
 
 
+def _seated_pick_point(
+    mesh: trimesh.Trimesh,
+    pick: list[float] | tuple[float, ...],
+    extent: np.ndarray,
+) -> np.ndarray:
+    bounds = np.asarray(mesh.bounds, dtype=np.float64)
+    center = (bounds[0] + bounds[1]) * 0.5
+    span = np.maximum(bounds[1] - bounds[0], 1e-9)
+    point = bounds[0] + span * np.array(
+        [float(pick[0]), float(pick[1]), float(pick[2])],
+        dtype=np.float64,
+    )
+    seated = point - center
+    seated[1] += float(extent[1]) * 0.5
+    return seated
+
+
+def _clamp_zoom(zoom: float) -> float:
+    return max(0.55, min(float(zoom or 1.0), 5.0))
+
+
+def _yp_direction(yaw_deg: float, pitch_deg: float) -> np.ndarray:
+    yaw = np.deg2rad(float(yaw_deg))
+    pitch = np.deg2rad(max(-85.0, min(85.0, float(pitch_deg))))
+    cy, sy = np.cos(yaw), np.sin(yaw)
+    cp, sp = np.cos(pitch), np.sin(pitch)
+    vec = np.array([sy * cp, sp, cy * cp], dtype=np.float64)
+    vec /= float(np.linalg.norm(vec) or 1.0)
+    return vec
+
+
 def _camera_eye_target(
     extent: np.ndarray,
     camera: str,
@@ -177,18 +308,44 @@ def _camera_eye_target(
     pad: float,
     zoom: float = 1.0,
     region: str = "",
+    look_at: np.ndarray | None = None,
+    yaw: float | None = None,
+    pitch: float | None = None,
+    shift: tuple[float, float, float] | list[float] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     max_dim = float(np.max(extent) or 1.0)
-    zoom = max(1.0, min(float(zoom or 1.0), 4.0))
+    zoom = _clamp_zoom(zoom)
     dist = max_dim * 2.2 * float(pad) / zoom
-    key = (region or "").strip().lower()
-    frac = _REGIONS.get(key, _REGIONS[""])
-    target = np.array(
-        [frac[0] * extent[0], frac[1] * extent[1], frac[2] * extent[2]],
-        dtype=np.float64,
-    )
-    direction = np.array(_CAMERAS.get((camera or "viewer").strip().lower(), _CAMERAS["viewer"]), dtype=np.float64)
-    direction /= float(np.linalg.norm(direction) or 1.0)
+    if look_at is not None:
+        target = np.asarray(look_at, dtype=np.float64).reshape(3)
+    else:
+        key = (region or "").strip().lower()
+        frac = _REGIONS.get(key, _REGIONS[""])
+        target = np.array(
+            [frac[0] * extent[0], frac[1] * extent[1], frac[2] * extent[2]],
+            dtype=np.float64,
+        )
+    if shift is not None and len(shift) >= 3:
+        target = target + np.array(
+            [
+                max(-1.0, min(1.0, float(shift[0]))) * float(extent[0]),
+                max(-1.0, min(1.0, float(shift[1]))) * float(extent[1]),
+                max(-1.0, min(1.0, float(shift[2]))) * float(extent[2]),
+            ],
+            dtype=np.float64,
+        )
+    if yaw is not None or pitch is not None:
+        named = _NAMED_YP.get((camera or "viewer").strip().lower(), _NAMED_YP["viewer"])
+        direction = _yp_direction(
+            named[0] if yaw is None else float(yaw),
+            named[1] if pitch is None else float(pitch),
+        )
+    else:
+        direction = np.array(
+            _CAMERAS.get((camera or "viewer").strip().lower(), _CAMERAS["viewer"]),
+            dtype=np.float64,
+        )
+        direction /= float(np.linalg.norm(direction) or 1.0)
     eye = target + direction * dist
     return eye, target
 
@@ -204,6 +361,8 @@ def _render_open3d(
     color: tuple[float, float, float],
     background: str,
     ground: bool,
+    marker: np.ndarray | None = None,
+    face_mask: np.ndarray | None = None,
 ) -> Path:
     import open3d as o3d
 
@@ -212,12 +371,31 @@ def _render_open3d(
         o3d.utility.Vector3iVector(faces),
     )
     mesh.compute_vertex_normals()
-    mesh.paint_uniform_color(list(color))
+    colors = np.broadcast_to(np.asarray(color, dtype=np.float64), (len(verts), 3)).copy()
+    if face_mask is not None and np.any(face_mask):
+        idx = np.unique(np.asarray(faces, dtype=np.int64)[np.asarray(face_mask, dtype=bool)].ravel())
+        colors[idx] = np.asarray(_MASK_RED, dtype=np.float64)
+    mesh.vertex_colors = o3d.utility.Vector3dVector(colors)
     vis = o3d.visualization.Visualizer()
     if not vis.create_window(width=int(size), height=int(size), visible=False):
         raise RuntimeError("Open3D create_window failed")
     try:
         vis.add_geometry(mesh)
+        if face_mask is not None and np.any(face_mask):
+            overlay = o3d.geometry.TriangleMesh(
+                o3d.utility.Vector3dVector(verts),
+                o3d.utility.Vector3iVector(np.asarray(faces, dtype=np.int64)[np.asarray(face_mask, dtype=bool)]),
+            )
+            overlay.compute_vertex_normals()
+            overlay.paint_uniform_color(list(_MASK_RED))
+            vis.add_geometry(overlay)
+        if marker is not None:
+            radius = max(float(np.max(np.ptp(verts, axis=0))) * 0.025, 1e-4)
+            dot = o3d.geometry.TriangleMesh.create_sphere(radius=radius, resolution=12)
+            dot.compute_vertex_normals()
+            dot.paint_uniform_color([0.95, 0.35, 0.12])
+            dot.translate(np.asarray(marker, dtype=np.float64))
+            vis.add_geometry(dot)
         if ground:
             vis.add_geometry(_ground_lineset(verts))
         opt = vis.get_render_option()
@@ -405,6 +583,75 @@ def _fill_triangle(
         pix = b0[..., None] * rgb[0] + b1[..., None] * rgb[1] + b2[..., None] * rgb[2]
         pix = pix[closer]
     image[miny : maxy + 1, minx : maxx + 1][closer] = pix
+
+
+def _fill_triangle_face(
+    face_buf: np.ndarray,
+    zbuf: np.ndarray,
+    pts: np.ndarray,
+    z: np.ndarray,
+    face_id: int,
+    size: int,
+) -> None:
+    minx = int(np.floor(pts[:, 0].min()))
+    maxx = int(np.ceil(pts[:, 0].max()))
+    miny = int(np.floor(pts[:, 1].min()))
+    maxy = int(np.ceil(pts[:, 1].max()))
+    if maxx < 0 or maxy < 0 or minx >= size or miny >= size:
+        return
+    minx = max(minx, 0)
+    miny = max(miny, 0)
+    maxx = min(maxx, size - 1)
+    maxy = min(maxy, size - 1)
+    if minx > maxx or miny > maxy:
+        return
+    a, b, c = pts
+    area = (b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])
+    if abs(area) < 1e-8:
+        return
+    ys, xs = np.mgrid[miny : maxy + 1, minx : maxx + 1]
+    px = xs.astype(np.float64) + 0.5
+    py = ys.astype(np.float64) + 0.5
+    w0 = (b[0] - a[0]) * (py - a[1]) - (b[1] - a[1]) * (px - a[0])
+    w1 = (c[0] - b[0]) * (py - b[1]) - (c[1] - b[1]) * (px - b[0])
+    w2 = (a[0] - c[0]) * (py - c[1]) - (a[1] - c[1]) * (px - c[0])
+    if area < 0:
+        mask = (w0 <= 0) & (w1 <= 0) & (w2 <= 0)
+    else:
+        mask = (w0 >= 0) & (w1 >= 0) & (w2 >= 0)
+    if not np.any(mask):
+        return
+    b0 = ((c[0] - b[0]) * (py - b[1]) - (c[1] - b[1]) * (px - b[0])) / area
+    b1 = ((a[0] - c[0]) * (py - c[1]) - (a[1] - c[1]) * (px - c[0])) / area
+    b2 = 1.0 - b0 - b1
+    inv_z = b0 / np.maximum(z[0], 1e-6) + b1 / np.maximum(z[1], 1e-6) + b2 / np.maximum(z[2], 1e-6)
+    pix_z = 1.0 / np.maximum(inv_z, 1e-9)
+    closer = mask & (pix_z < zbuf[miny : maxy + 1, minx : maxx + 1])
+    if not np.any(closer):
+        return
+    zbuf[miny : maxy + 1, minx : maxx + 1][closer] = pix_z[closer]
+    face_buf[miny : maxy + 1, minx : maxx + 1][closer] = int(face_id)
+
+
+def rasterize_face_ids(
+    verts: np.ndarray,
+    faces: np.ndarray,
+    eye: np.ndarray,
+    target: np.ndarray,
+    size: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-pixel front-most face index for a look-style camera (same as preview)."""
+    xy, depth = _project_points(verts, eye, target, size)
+    face_buf = np.full((size, size), -1, dtype=np.int32)
+    zbuf = np.full((size, size), np.inf, dtype=np.float32)
+    pts = xy[faces]
+    z = depth[faces]
+    behind = np.all(z <= 1e-5, axis=1)
+    for i in range(len(faces)):
+        if behind[i]:
+            continue
+        _fill_triangle_face(face_buf, zbuf, pts[i], z[i], i, size)
+    return face_buf, zbuf
 
 
 def _draw_ground(

@@ -83,7 +83,27 @@ ComfyUI можно держать на другой машине: в Настр�
 ## Скрипты
 
 - `scripts/setup.ps1` — `uv sync` + ComfyUI + checkpoints
+- `scripts/setup.ps1 -WithSegmentation` — тот же setup + OWL-ViT scaffold для нового segmentation stack
+- `scripts/setup-segmentation.ps1` — shortcut к `setup-comfyui.ps1 -WithSegmentation`
+- `scripts/check-segmentation.ps1` — smoke-check config / ComfyUI / Grounding / SAM3
 - `scripts/start-comfyui.ps1` / `stop-comfyui.ps1`
 - `scripts/run.ps1` — FastAPI (`-WithComfyUI` опционально)
 
 UI собирается сам: при старте и при открытии `/`, если `web/src` новее `web/dist`. Достаточно обновить страницу. Нужен `npm` в PATH.
+
+## Segmentation Scaffold
+
+Phase 1 для нового auto-remove stack не тащит весь inference pipeline сразу, а готовит deploy base:
+
+- detector: `GroundingDINO` или `OWLv2` через `ComfyUI-Grounding`
+- segmenter: `SAM3` на ComfyUI host
+- projection / fusion: будет добавлено в backend следующей фазой
+
+Пример локального setup:
+
+```powershell
+.\scripts\setup.ps1 -WithSegmentation
+.\scripts\check-segmentation.ps1
+```
+
+Если ComfyUI живет на другой машине, `setup-segmentation.ps1` нужно запускать там, где доступен GPU и установлен ComfyUI с `SAM3`.

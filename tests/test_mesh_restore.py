@@ -52,11 +52,35 @@ class MeshRestoreTests(unittest.TestCase):
         self.assertEqual(self.store.current_mesh(self.chat).name, source.name)
         self.assertEqual(self.store.source_mesh(self.chat).name, source.name)
 
+    def test_previous_walks_undo_stack(self) -> None:
+        source = _stl(self.files, "aaaaaaa1_mesh.stl")
+        self.store.set_current_mesh(self.chat, source, role="source")
+        a = _stl(self.files, "bbbbbbb2_smoothed.stl")
+        self.store.set_current_mesh(self.chat, a, role="edit")
+        b = _stl(self.files, "ccccccc3_removed.stl")
+        self.store.set_current_mesh(self.chat, b, role="edit")
+        self.assertEqual(self.store.mesh_history(self.chat), [source.name, a.name])
+        first = self.store.restore_mesh(self.chat, "previous")
+        self.assertEqual(first.name, a.name)
+        second = self.store.restore_mesh(self.chat, "previous")
+        self.assertEqual(second.name, source.name)
+
     def test_first_mesh_without_role_becomes_source(self) -> None:
         mesh = _stl(self.files, "uploaded.stl")
         self.store.set_current_mesh(self.chat, mesh)
         self.assertEqual(self.store.source_mesh(self.chat).name, mesh.name)
         self.assertEqual(self.store.current_mesh(self.chat).name, mesh.name)
+
+    def test_edit_clears_mesh_pick(self) -> None:
+        source = _stl(self.files, "aaaaaaa1_mesh.stl")
+        self.store.set_current_mesh(self.chat, source, role="source")
+        self.store.set_mesh_pick(self.chat, 0.8, 0.6, 0.3)
+        self.assertEqual(self.store.get_meta(self.chat).mesh_region, "right")
+        edited = _stl(self.files, "bbbbbbb2_smoothed.stl")
+        self.store.set_current_mesh(self.chat, edited, role="edit")
+        meta = self.store.get_meta(self.chat)
+        self.assertEqual(meta.mesh_pick, [])
+        self.assertEqual(meta.mesh_region, "")
 
 
 if __name__ == "__main__":

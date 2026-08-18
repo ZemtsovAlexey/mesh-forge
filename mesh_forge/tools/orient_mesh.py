@@ -12,7 +12,7 @@ class OrientMesh(MeshTool):
     title = "Ориентация"
 
     def run(self, ctx: RunContext[ChatDeps], mesh_ref: str | None = None) -> str:
-        """Seat the mesh upright on the ground (stable base, +Y up). Uses current mesh if mesh_ref omitted."""
+        """Stand the whole mesh on the ground, +Y up. Not a local part fix."""
         src = resolve_mesh(ctx, mesh_ref)
         mesh = orient_upright(load_mesh(src))
         art = save_mesh_artifact(ctx, mesh, "oriented.stl", label="oriented")

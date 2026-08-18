@@ -44,7 +44,7 @@ class RemoveBackground(MeshTool):
         images: artifact ids as strings, e.g. ["a19885e6_front"]. Empty = this-turn attachments, else reply images.
         Clay from generate_image: skip this tool, go straight to images_to_mesh.
         After cutout: look at the PNG (thin legs/holes still there?), then images_to_mesh with the NEW ids, not the originals.
-        Already-transparent images are skipped. Do not repair a mesh cube/panel leftover — recut and remesh.
+        Already-transparent images are skipped. A mesh cube/panel leftover → recut and remesh.
         """
         from mesh_forge import progress as prog
 

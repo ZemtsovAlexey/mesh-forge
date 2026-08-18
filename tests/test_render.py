@@ -136,6 +136,26 @@ class RenderPreviewTests(unittest.TestCase):
         unique = len(np.unique(colors.reshape(-1, 3), axis=0))
         self.assertGreater(unique, 80)
 
+    def test_preview_with_pick_writes_file(self) -> None:
+        mesh = trimesh.creation.box(extents=[1.0, 1.0, 1.0])
+        with tempfile.TemporaryDirectory() as tmp:
+            src = _save_mesh(mesh, Path(tmp))
+            out = Path(tmp) / "pick.png"
+            render_mesh_preview(src, out, size=160, camera="front", zoom=2.2, pick=[0.9, 0.5, 0.5])
+            self.assertGreater(out.stat().st_size, 64)
+
+    def test_yaw_changes_the_frame(self) -> None:
+        mesh = trimesh.creation.box(extents=[0.4, 1.2, 0.8])
+        with tempfile.TemporaryDirectory() as tmp:
+            src = _save_mesh(mesh, Path(tmp))
+            a_path = Path(tmp) / "a.png"
+            b_path = Path(tmp) / "b.png"
+            render_mesh_preview(src, a_path, size=160, yaw=0.0, pitch=12.0)
+            render_mesh_preview(src, b_path, size=160, yaw=90.0, pitch=12.0)
+            a = np.asarray(Image.open(a_path).convert("RGB"))
+            b = np.asarray(Image.open(b_path).convert("RGB"))
+        self.assertGreater(float(np.mean(np.abs(a.astype(np.int16) - b.astype(np.int16)))), 4.0)
+
 
 if __name__ == "__main__":
     unittest.main()

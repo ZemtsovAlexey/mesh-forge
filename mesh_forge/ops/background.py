@@ -25,3 +25,22 @@ def cut_background(src: Path, dest: Path) -> Path:
     data = remove(src.read_bytes())
     Image.open(io.BytesIO(data)).convert("RGBA").save(dest)
     return dest
+
+
+def cut_and_flatten(
+    src: Path,
+    dest: Path,
+    *,
+    background: tuple[int, int, int] = (154, 154, 154),
+) -> Path:
+    """Cut the subject, then paste on a flat studio fill so Hunyuan does not mesh the backdrop."""
+    from PIL import Image
+
+    cut = dest.with_name(f"{dest.stem}_alpha.png")
+    cut_background(src, cut)
+    img = Image.open(cut).convert("RGBA")
+    canvas = Image.new("RGB", img.size, background)
+    canvas.paste(img, mask=img.getchannel("A"))
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    canvas.save(dest)
+    return dest

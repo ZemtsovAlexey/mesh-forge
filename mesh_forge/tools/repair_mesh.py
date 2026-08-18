@@ -12,6 +12,7 @@ from mesh_forge.tools.common import resolve_mesh, save_mesh_artifact
 class RepairMesh(MeshTool):
     title = "Ремонт"
     heavy = True
+    expose = False
 
     def run(
         self,
@@ -23,9 +24,9 @@ class RepairMesh(MeshTool):
     ) -> str:
         """Repair mesh: holes, non-manifold, optional floaters, needle faces. Uses current mesh if mesh_ref omitted.
 
-        Only when the user asked to repair. Open/non-watertight Hunyuan output is normal — do not repair just for that.
+        Open/non-watertight Hunyuan output is normal.
         keep_largest: only if there are obvious separate floaters (default false).
-        Do not call on an empty mesh. If this repair makes the shape worse, restore_mesh — do not generate_image.
+        If this repair makes the shape worse, restore_mesh.
         """
         from mesh_forge.mesh_qc import mesh_is_usable
 
@@ -34,8 +35,7 @@ class RepairMesh(MeshTool):
         if not ok:
             return (
                 f"Cannot repair {src.name}: mesh is empty or too broken.\n{qc}\n"
-                "Do not call repair again. restore_mesh(to='source' or 'previous'). "
-                "Не generate_image, пока пользователь не попросит переделать картинку."
+                "restore_mesh(to='source' or 'previous')."
             )
         try:
             mesh = load_mesh(src)
@@ -56,10 +56,10 @@ class RepairMesh(MeshTool):
             art = save_mesh_artifact(ctx, mesh, "repaired.stl", label="repaired")
             return (
                 f"Repaired {src.name} → {art.name} ({', '.join(notes) or 'no-op'}). Faces={len(mesh.faces)}. "
-                "look(target='mesh'). Если форма хуже — restore_mesh(to='previous'). Не generate_image."
+                "look(target='mesh'). Если форма хуже — restore_mesh(to='previous')."
             )
         except Exception as exc:
             return (
                 f"Repair failed on {src.name}: {exc}. "
-                "restore_mesh(to='previous' or 'source'). Не generate_image."
+                "restore_mesh(to='previous' or 'source')."
             )

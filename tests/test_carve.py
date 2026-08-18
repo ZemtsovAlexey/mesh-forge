@@ -54,7 +54,7 @@ class CarveTests(unittest.TestCase):
         box = resolve_carve_box(side="right", amount=0.22)
         with self.assertRaises(CarveError) as ctx:
             carve_region(src, box, action="remove", min_keep_faces=50)
-        self.assertIn("armrest", str(ctx.exception).lower())
+        self.assertIn("too wide", str(ctx.exception).lower())
 
     def test_removes_right_wing_keeps_body(self) -> None:
         src = _chair_with_wing()
@@ -100,11 +100,13 @@ class CarveTests(unittest.TestCase):
         with self.assertRaises(CarveError):
             carve_region(src, box, action="remove", min_keep_ratio=0.5, min_keep_faces=10)
 
-    def test_tool_is_registered(self) -> None:
+    def test_tool_is_hidden_from_agent(self) -> None:
         from mesh_forge.tools import ALL_TOOLS
 
         names = {t.name for t in ALL_TOOLS}
-        self.assertIn("carve_mesh", names)
+        self.assertNotIn("carve_mesh", names)
+        self.assertIn("remove_mesh", names)
+        self.assertIn("remove_extra", names)
 
 
 if __name__ == "__main__":

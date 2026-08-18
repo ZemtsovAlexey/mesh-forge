@@ -12,6 +12,7 @@ from mesh_forge.domain import ImageArtifact, ImageSet
 from mesh_forge.mesh_qc import mesh_is_usable
 from mesh_forge.ops.geometry import load_mesh, save_mesh
 from mesh_forge.tools.base import MeshTool
+from mesh_forge.tools.common import emit_mesh_preview
 from mesh_forge.tools.knobs import MeshGenKnobs, ViewName, apply_mesh_knobs
 
 _VIEW_NAMES = ("front", "left", "back", "right")
@@ -77,9 +78,8 @@ class ImagesToMesh(MeshTool):
         Several generate_image fronts are NOT left/back/right — use one photo, or generate_views for a real orbit.
         >4: first 4 used, rest reported as dropped. Label views after look if you know front/left/back/right.
 
-        Empty mesh (0 verts) is a failed reconstruction, not a hole. Do not repair. Retry with one front photo and a new seed.
-        After a SUCCESSFUL mesh: stop. Do not inspect+repair+smooth. Open/non-watertight is normal.
-        Do not call this to undo a bad geometry edit — use restore_mesh (previous or source).
+        Empty mesh (0 verts) is a failed reconstruction, not a hole. Retry with one front photo and a new seed.
+        Open/non-watertight is normal for Hunyuan. To undo a bad geometry edit use restore_mesh (previous or source).
         """
         from mesh_forge import progress as prog
 
@@ -113,7 +113,7 @@ class ImagesToMesh(MeshTool):
             views = ", ".join(f"{label}={path.name}" for label, path in picked)
             return (
                 f"ERROR: Hunyuan failed on {len(picked)} image(s): {views}. {exc}. "
-                "Do not repair. If a previous mesh exists, restore_mesh(to='source'). "
+                "If a previous mesh exists, restore_mesh(to='source'). "
                 "Else retry images_to_mesh with ONE front photo and a new seed."
                 f" knobs={echo}"
             )
@@ -132,13 +132,14 @@ class ImagesToMesh(MeshTool):
         if not ok:
             return (
                 f"ERROR: Hunyuan produced an empty/invalid mesh ({dest.name}) from {len(picked)} image(s): {views}."
-                f"{drop_note} {qc} Do not repair. If a previous mesh exists, restore_mesh(to='source'). "
+                f"{drop_note} {qc} If a previous mesh exists, restore_mesh(to='source'). "
                 f"Else retry images_to_mesh with ONE front photo "
                 f"(not several generate_image fronts as left/back/right) and a new seed. knobs={echo}"
             )
         ctx.deps.store.set_current_mesh(ctx.deps.chat_id, dest, role="source")
         art = ctx.deps.store.artifact_from_path(ctx.deps.chat_id, dest, label="mesh")
         ctx.deps.emit_artifact(art)
+        emit_mesh_preview(ctx, dest)
         return (
             f"Mesh {art.name} from {len(picked)} image(s): {views}.{drop_note} knobs={echo} "
             "Это source-меш. Остановись. Не inspect+repair+smooth, пока пользователь не попросит. "

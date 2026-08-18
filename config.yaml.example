@@ -77,6 +77,30 @@ comfyui:
   mesh_guidance: 3.5
   mesh_octree_resolution: 256
   mesh_num_chunks: 8000
+segmentation:
+  # Comfy-first segmentation scaffold: detector + segmenter live on the ComfyUI host.
+  enabled: false
+  provider: comfyui
+  detector: groundingdino
+  detector_backend: grounding
+  detector_model: IDEA-Research/grounding-dino-tiny
+  detector_node_repo: https://github.com/PozzettiAndrea/ComfyUI-Grounding.git
+  detector_device: cuda
+  detector_dtype: float16
+  segmenter: sam3
+  segmenter_backend: sam3
+  # Empty = reuse comfyui.base_url.
+  segmenter_base_url: ""
+  workflow_detect: ""
+  workflow_segment: ""
+  render_size: 768
+  max_views: 4
+  sequential: true
+  min_box_score: 0.12
+  mask_threshold: 0.5
+  projection_min_views: 2
+  debug_emit_every_step: true
+  free_gpu_between_steps: true
 photo:
   target_height_mm: 160
   mesh_postprocess: true
