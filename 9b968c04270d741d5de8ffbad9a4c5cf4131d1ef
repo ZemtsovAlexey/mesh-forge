@@ -1,0 +1,56 @@
+config.yaml.example
+  53650b40ee67df5a 92
+mesh_forge/adapters/comfyui_client.py
+  53650b40ee67df5a 17,170-223,832-935,1059-1240
+mesh_forge/config.py
+  53650b40ee67df5a 183,256-265,413,415-416
+mesh_forge/domain/__init__.py
+  53650b40ee67df5a 1,11
+mesh_forge/domain/artifacts.py
+  53650b40ee67df5a 50-59
+mesh_forge/tools/mask_mesh.py
+  53650b40ee67df5a 417-520,531,541-547,560-562,565-566,586,600
+mesh_forge/tools/remove_extra.py
+  53650b40ee67df5a 98-107,111-122,137-140,273-369
+mesh_forge/workflows/seg_detect_view.json
+  53650b40ee67df5a 1-46
+mesh_forge/workflows/seg_text_view_custom.json
+  53650b40ee67df5a 1-52
+mesh_forge/workflows/seg_text_view.json
+  53650b40ee67df5a 1-76
+scripts/check-segmentation.ps1
+  53650b40ee67df5a 2-3,70-96
+scripts/comfyui-common.ps1
+  53650b40ee67df5a 476-684
+scripts/setup-comfyui.ps1
+  53650b40ee67df5a 191-195,198-208,243-248,250-258,260-282,287,317,319-324
+scripts/setup-segmentation.ps1
+  53650b40ee67df5a 13
+scripts/setup.ps1
+  53650b40ee67df5a 93-95,108
+tests/test_mesh_edit.py
+  53650b40ee67df5a 4,355-356,369,889-891,896,902,907-908,937,946-1058,1072,1474-1538
+tests/test_segmentation_workflow.py
+  53650b40ee67df5a 1-169
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "git-ai-lite-1.0.0",
+  "base_commit_sha": "08c45017601f71de2bf695a36165689fb6654652",
+  "prompts": {
+    "53650b40ee67df5a": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "defd1b63-56c0-46e0-84a3-e7398388cd5e",
+        "model": "grok-4.6"
+      },
+      "human_author": "╨Ч╨╡╨╝╤Ж╨╛╨▓ ╨Р╨╗╨╡╨║╤Б╨╡╨╣ <zemtsov@moedelo.org>",
+      "messages": [],
+      "total_additions": 1517,
+      "total_deletions": 118,
+      "accepted_lines": 1449,
+      "accepted_deletions": 50,
+      "overridden_lines": 68
+    }
+  }
+}
