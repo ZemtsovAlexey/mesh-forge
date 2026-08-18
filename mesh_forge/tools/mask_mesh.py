@@ -300,7 +300,18 @@ def _mask_think(ctx: RunContext[ChatDeps], text: str) -> None:
 
 
 def _emit_mask_preview(ctx: RunContext[ChatDeps], path: Path, *, label: str, view: str) -> None:
-    art = ctx.deps.store.artifact_from_path(ctx.deps.chat_id, path, label=label, view=view)
+    src = Path(path)
+    if not src.is_file():
+        return
+    files = ctx.deps.store.files_dir(ctx.deps.chat_id).resolve()
+    dest = src
+    if src.resolve().parent != files:
+        dest = ctx.deps.store.new_file(
+            ctx.deps.chat_id,
+            f"{label}_{view}{src.suffix or '.png'}",
+        )
+        dest.write_bytes(src.read_bytes())
+    art = ctx.deps.store.artifact_from_path(ctx.deps.chat_id, dest, label=label, view=view)
     ctx.deps.emit_artifact(art)
 
 
@@ -435,6 +446,13 @@ def _mask_bbox_from_preview(path: Path) -> dict[str, float] | None:
     return {"x0": x0, "y0": y0, "x1": x1, "y1": y1}
 
 
+def _bbox_is_too_broad(bbox: dict[str, float]) -> bool:
+    width = float(bbox["x1"]) - float(bbox["x0"])
+    height = float(bbox["y1"]) - float(bbox["y0"])
+    area = width * height
+    return area >= 0.08 or height >= 0.50 or width >= 0.55
+
+
 def _detect_multi_view_with_comfy(
     ctx: RunContext[ChatDeps],
     target: str,
@@ -452,7 +470,7 @@ def _detect_multi_view_with_comfy(
 
     client = ComfyUiClient()
     out: list[dict] = []
-    views = records[: max(1, int(seg_cfg.max_views or 4))]
+    views = records[:1]
     _mask_log(
         ctx,
         f"Comfy segmentation enabled: text-masking {len(views)} views before VLM boxes.",
@@ -490,6 +508,12 @@ def _detect_multi_view_with_comfy(
             _mask_think(ctx, f"Comfy segmentation on {view} returned no usable mask bbox.")
             continue
         area = float((bbox["x1"] - bbox["x0"]) * (bbox["y1"] - bbox["y0"]))
+        if _bbox_is_too_broad(bbox):
+            _mask_think(
+                ctx,
+                f"Comfy segmentation on {view}: bbox too broad (area={area:.3f}); ignoring this view.",
+            )
+            continue
         score = float(result.scores[0]) if result.scores else max(0.25, min(0.95, area * 4.0 + 0.25))
         source = "sam3 boxes" if result.boxes else "mask preview"
         _mask_think(ctx, f"Comfy segmentation on {view}: bbox area={area:.3f} via {source}.")
@@ -570,6 +594,14 @@ def _build_auto_mask(
             + ", ".join(str(obs.get("view") or "") for obs in scored_observations)
             + ".",
         )
+        n_faces = int(len(faces))
+        if n_faces > 80_000:
+            _mask_log(
+                ctx,
+                f"Skipping slow 3D box projection on {n_faces} faces; use a click or the geometry cut instead.",
+            )
+            continue
+        _mask_log(ctx, f"Projecting 2D boxes onto {n_faces} faces.")
         mask, scores = mask_from_view_observations(mesh, verts, faces, scored_observations)
         score_sum = float(np.maximum(scores, 0.0).sum())
         _mask_think(ctx, f"Candidate size after scoring: {int(mask.sum())} faces, score_sum={score_sum:.1f}.")

@@ -95,31 +95,9 @@ class RemoveExtra(MeshTool):
             )
 
         loaded = load_mesh(src)
-        painted = _segmentation_mask_candidate(
-            ctx,
-            src,
-            loaded,
-            hint,
-            views=views,
-            yaw=yaw,
-            pitch=pitch,
-            zoom=zoom,
-        )
         try:
             result = build_auto_remove_proposal(loaded, hint)
         except EditError as exc:
-            if painted is not None:
-                return self._finish_mask_proposal(
-                    ctx,
-                    src,
-                    loaded,
-                    painted,
-                    hint,
-                    strategy="segmentation",
-                    views=views,
-                    zoom=zoom,
-                    prefix=f"{strategy} fallback via SAM3: {exc}. ",
-                )
             if strategy != "surface_patch":
                 return self._run_surface_patch(
                     ctx,
@@ -134,10 +112,6 @@ class RemoveExtra(MeshTool):
                     prefix=f"{strategy} fallback: {exc}. ",
                 )
             return f"remove_extra failed: {exc}"
-        if painted is not None:
-            candidates = [painted, *list(result.get("candidate_masks") or [])]
-            result["candidate_masks"] = candidates
-            _remove_log(ctx, f"Added SAM3 mask candidate with {int(painted.sum())} faces.")
         if result.get("candidate_masks"):
             _remove_log(
                 ctx,
@@ -269,103 +243,6 @@ class RemoveExtra(MeshTool):
             "If the user confirms, call remove_extra(apply=True). "
             + note
         )
-
-    def _finish_mask_proposal(
-        self,
-        ctx: RunContext[ChatDeps],
-        src,
-        loaded,
-        mask: np.ndarray,
-        hint: str,
-        *,
-        strategy: str,
-        views: str | None,
-        zoom: float,
-        prefix: str = "",
-    ) -> str:
-        emit_masked_mesh_view(
-            ctx,
-            src,
-            loaded,
-            mask,
-            camera=str(views or "right"),
-            zoom=max(float(zoom or 1.0), 1.3),
-        )
-        from mesh_forge.ops.geometry import carve_faces
-
-        out_mesh, stats = carve_faces(loaded, mask, min_keep_ratio=0.50, min_keep_faces=8, drop_crumbs=False)
-        art = save_mesh_artifact(
-            ctx,
-            out_mesh,
-            f"{strategy}_proposal.stl",
-            label=f"proposal {strategy}",
-            role="edit",
-            make_current=False,
-        )
-        ctx.deps.store.set_removal_state(
-            ctx.deps.chat_id,
-            {
-                "tool": "remove_extra",
-                "mesh": src.name,
-                "target": hint,
-                "strategy": strategy,
-                "proposal_status": "ready",
-                "proposal_mesh": art.name,
-                "candidate_faces": int(mask.sum()),
-                "note": "Proposal from Comfy SAM3 multi-view mask.",
-            },
-        )
-        ctx.deps.store.clear_mesh_target(ctx.deps.chat_id)
-        return (
-            prefix
-            + f"Prepared removal proposal with strategy {strategy} from Comfy segmentation "
-            f"({int(mask.sum())} faces). Open the proposal preview and compare it to the request. "
-            "If the user confirms, call remove_extra(apply=True)."
-        )
-
-
-def _segmentation_mask_candidate(
-    ctx: RunContext[ChatDeps],
-    src,
-    loaded,
-    hint: str,
-    *,
-    views: str | None,
-    yaw: float | None,
-    pitch: float | None,
-    zoom: float,
-):
-    try:
-        from mesh_forge.config import load_config
-
-        if not bool(load_config().segmentation.enabled):
-            return None
-    except Exception:
-        return None
-    from mesh_forge.tools.mask_mesh import _build_auto_mask
-
-    _remove_log(ctx, "Segmentation-first: building a SAM3 multi-view mask before geometry cut.")
-    try:
-        result = _build_auto_mask(
-            ctx,
-            loaded,
-            src,
-            target=hint,
-            focus_view=str(views or "right"),
-            yaw=yaw,
-            pitch=pitch,
-            zoom=float(zoom or 1.0),
-            review=False,
-        )
-    except Exception as exc:
-        _remove_log(ctx, f"Segmentation-first failed: {exc}.")
-        return None
-    mask = np.asarray(result.get("mask"), dtype=bool)
-    if mask.shape[0] != len(loaded.faces) or not np.any(mask):
-        _remove_log(ctx, "Segmentation-first produced an empty 3D mask.")
-        return None
-    _remove_log(ctx, f"Segmentation-first painted {int(mask.sum())} faces.")
-    return mask
 
 
 def _latest_user_rejected(ctx: RunContext[ChatDeps]) -> bool:

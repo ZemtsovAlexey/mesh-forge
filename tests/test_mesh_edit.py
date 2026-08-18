@@ -1040,7 +1040,7 @@ class MeshMaskStoreTests(unittest.TestCase):
                     return SegmentationArtifact(
                         mask=ImageArtifact(path=mask_path, label="mask"),
                         visualization=ImageArtifact(path=vis_path, label="seg"),
-                        boxes=[{"x0": 0.2, "y0": 0.15, "x1": 0.8, "y1": 0.7}],
+                        boxes=[{"x0": 0.62, "y0": 0.48, "x1": 0.78, "y1": 0.66}],
                         scores=[0.91],
                     )
 
@@ -1049,12 +1049,52 @@ class MeshMaskStoreTests(unittest.TestCase):
             ), patch("mesh_forge.adapters.comfyui_client.ComfyUiClient", return_value=_Client()):
                 observations = _detect_multi_view_with_comfy(ctx, "right skirt flap", records)
 
-        self.assertEqual(len(observations), 3)
+        self.assertEqual(len(observations), 1)
         self.assertEqual(observations[0]["view"], "right")
-        self.assertEqual(observations[2]["view"], "back")
-        self.assertAlmostEqual(float(observations[0]["x0"]), 0.2, places=3)
-        self.assertGreater(float(observations[0]["x1"]) - float(observations[0]["x0"]), 0.4)
-        self.assertGreaterEqual(len(emitted), 6)
+        self.assertAlmostEqual(float(observations[0]["x0"]), 0.62, places=3)
+        self.assertLess(float(observations[0]["x1"]) - float(observations[0]["x0"]), 0.25)
+        self.assertGreaterEqual(len(emitted), 2)
+
+    def test_comfy_bbox_too_broad_is_ignored(self) -> None:
+        from mesh_forge.tools.mask_mesh import _bbox_is_too_broad
+
+        self.assertTrue(_bbox_is_too_broad({"x0": 0.37, "y0": 0.17, "x1": 0.63, "y1": 0.77}))
+        self.assertFalse(_bbox_is_too_broad({"x0": 0.62, "y0": 0.48, "x1": 0.78, "y1": 0.66}))
+
+    def test_emit_mask_preview_copies_nested_comfy_files_into_chat_files(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from types import SimpleNamespace
+
+        from PIL import Image
+
+        from mesh_forge.agent.deps import ChatDeps
+        from mesh_forge.chat.store import ChatStore
+        from mesh_forge.tools.mask_mesh import _emit_mask_preview
+
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ChatStore(root=Path(tmp))
+            chat = store.create_chat("mask").id
+            nested = store.files_dir(chat) / "segmentation" / "segmentation"
+            nested.mkdir(parents=True)
+            src = nested / "visualization.png"
+            Image.new("RGB", (8, 8), (255, 0, 0)).save(src)
+            emitted: list = []
+            ctx = SimpleNamespace(
+                deps=ChatDeps(
+                    chat_id=chat,
+                    store=store,
+                    emit=lambda event: emitted.append(event),
+                )
+            )
+            _emit_mask_preview(ctx, src, label="маска · comfy right", view="right")
+
+            self.assertEqual(len(emitted), 1)
+            artifact = emitted[0]["artifact"]
+            served = store.resolve_file(chat, artifact["name"])
+            self.assertTrue(served.is_file())
+            self.assertEqual(served.parent, store.files_dir(chat))
+            self.assertNotEqual(served.name, "visualization.png")
 
     def test_mask_geometry_metrics_marks_flat_patch(self) -> None:
         import numpy as np
@@ -1471,7 +1511,7 @@ class MeshMaskStoreTests(unittest.TestCase):
             self.assertIn("apply blocked", note)
             self.assertEqual(store.removal_state(chat), {})
 
-    def test_remove_extra_injects_sam3_mask_into_candidates(self) -> None:
+    def test_remove_extra_uses_geometry_without_sam3_first(self) -> None:
         import tempfile
         from pathlib import Path
         from types import SimpleNamespace
@@ -1493,10 +1533,8 @@ class MeshMaskStoreTests(unittest.TestCase):
             store.set_current_mesh(chat, mesh_path, role="source")
             ctx = SimpleNamespace(deps=ChatDeps(chat_id=chat, store=store))
             n = int(len(mesh.faces))
-            painted = np.zeros(n, dtype=bool)
-            painted[: max(8, n // 8)] = True
             geometry = np.zeros(n, dtype=bool)
-            geometry[max(8, n // 8) : max(16, n // 4)] = True
+            geometry[: max(8, n // 8)] = True
             seen: dict[str, object] = {}
 
             def _fake_rerank(_ctx, _src, _mesh, result, **_kwargs):
@@ -1506,9 +1544,6 @@ class MeshMaskStoreTests(unittest.TestCase):
             with patch(
                 "mesh_forge.config.load_config",
                 return_value=AppConfig(segmentation=SegmentationConfig(enabled=True)),
-            ), patch(
-                "mesh_forge.tools.remove_extra._segmentation_mask_candidate",
-                return_value=painted,
             ), patch(
                 "mesh_forge.tools.remove_extra.build_auto_remove_proposal",
                 return_value={
@@ -1532,9 +1567,9 @@ class MeshMaskStoreTests(unittest.TestCase):
                 note = RemoveExtra().run(ctx, describe="убери лепесток справа", views="right")
 
         self.assertIn("protrusion_cut", note)
-        self.assertGreaterEqual(len(seen.get("candidates") or []), 2)
+        self.assertEqual(len(seen.get("candidates") or []), 1)
         first = np.asarray((seen.get("candidates") or [None])[0], dtype=bool)
-        self.assertTrue(np.array_equal(first, painted))
+        self.assertTrue(np.array_equal(first, geometry))
 
     def test_rerank_protrusion_candidates_prefers_vlm_ok_candidate(self) -> None:
         import tempfile
