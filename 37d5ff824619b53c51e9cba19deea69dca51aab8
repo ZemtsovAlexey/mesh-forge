@@ -1,0 +1,176 @@
+api/routes/system.py
+  213c31d7ec6c0357 24
+  53650b40ee67df5a 24
+  5f79a871f907e41b 26,67-72,91,137-146
+api/schemas.py
+  53650b40ee67df5a 54-56,65-67,71-87
+  5f79a871f907e41b 116,120,129
+api/services.py
+  213c31d7ec6c0357 15
+  53650b40ee67df5a 15
+  5f79a871f907e41b 17,188,228,240-246
+config.yaml.example
+  5f79a871f907e41b 2,8-13
+mesh_forge/agent/gpu_model.py
+  213c31d7ec6c0357 3,7,16-49,55-57
+  53650b40ee67df5a 3,7,15-49,55-57,88-94,99
+  5f79a871f907e41b 11-12,53,62,76,93,95,99-101
+mesh_forge/application/stepped_pipeline.py
+  5f79a871f907e41b 167
+mesh_forge/backends/lmstudio.py
+  213c31d7ec6c0357 12-38
+  53650b40ee67df5a 6,12-38,72-111,118,122,129,132-170,284-285,410-411,420-421,425-468,470-478,480-485,487-556,558-597,600,603-604,606-607,687-692,705-729,758-852,856
+  5f79a871f907e41b 12,27,118,124,127,144,148,671,680,682-684,687-692
+  88c8a30b6c995134 6,12,72-105,410-411,505-533
+mesh_forge/config.py
+  213c31d7ec6c0357 26-43,51
+  53650b40ee67df5a 26-43,51,447
+  5f79a871f907e41b 34-48,59-89,264,288,410,422-426,428-431,445
+mesh_forge/runtime/__init__.py
+  5f79a871f907e41b 1,10
+mesh_forge/runtime/gpu_handoff.py
+  53650b40ee67df5a 4-8,14,21-24,78,96-102,113-121,124-126,129-276
+  5f79a871f907e41b 14,41,57-58,73-75,78
+  693920c29a23d78a 4-8,14,21-24,78,96-102,113-121,124-126,129-276
+mesh_forge/runtime/gpu_scheduler.py
+  5f79a871f907e41b 8-9,302,308,387-405
+README.md
+  53650b40ee67df5a 9-10,30,34,36
+  5f79a871f907e41b 9,30-37,81
+tests/test_llm_provider.py
+  5f79a871f907e41b 1-114
+web/src/api.ts
+  213c31d7ec6c0357 1-15
+  53650b40ee67df5a 1-18,56-61,94-96,101-102,113,149-163,165-168
+  5f79a871f907e41b 7,20-24
+  88c8a30b6c995134 59
+web/src/components/Settings.tsx
+  213c31d7ec6c0357 3-4,153-179,182-186
+  53650b40ee67df5a 3-4,117,119,153-179,182-186,244,246
+  5f79a871f907e41b 3-4,7,29,61,105-127,146-179,182-186,190-194
+web/src/components/StatusPills.tsx
+  5f79a871f907e41b 3-9,26
+web/src/types.ts
+  213c31d7ec6c0357 103
+  53650b40ee67df5a 22,27,32-43,55-57,73-79,86-89,114,124,127-129,133
+  5f79a871f907e41b 103,114-115,119,127-133
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "git-ai-lite-1.0.0",
+  "base_commit_sha": "744d5d3e39247bd1ab4147c70ab74f99804f2f12",
+  "prompts": {
+    "88c8a30b6c995134": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "f9fe6599-daff-44c6-9cc8-8c7a009c8a91",
+        "model": "grok-4.6"
+      },
+      "human_author": "╨Ч╨╡╨╝╤Ж╨╛╨▓ ╨Р╨╗╨╡╨║╤Б╨╡╨╣ <zemtsov@moedelo.org>",
+      "messages": [],
+      "total_additions": 339,
+      "total_deletions": 93,
+      "accepted_lines": 68,
+      "accepted_deletions": 1,
+      "overridden_lines": 271
+    },
+    "163f95d615f8d618": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "92b38b9a-27a9-4941-b897-83c85bec2f4f",
+        "model": "grok-4.6"
+      },
+      "human_author": "╨Ч╨╡╨╝╤Ж╨╛╨▓ ╨Р╨╗╨╡╨║╤Б╨╡╨╣ <zemtsov@moedelo.org>",
+      "messages": [],
+      "total_additions": 64,
+      "total_deletions": 167,
+      "accepted_lines": 0,
+      "accepted_deletions": 0,
+      "overridden_lines": 64
+    },
+    "53650b40ee67df5a": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "defd1b63-56c0-46e0-84a3-e7398388cd5e",
+        "model": "grok-4.6"
+      },
+      "human_author": "╨Ч╨╡╨╝╤Ж╨╛╨▓ ╨Р╨╗╨╡╨║╤Б╨╡╨╣ <zemtsov@moedelo.org>",
+      "messages": [],
+      "total_additions": 12556,
+      "total_deletions": 2965,
+      "accepted_lines": 814,
+      "accepted_deletions": 107,
+      "overridden_lines": 11742
+    },
+    "10e9bb76ad8cd041": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "a7ed30dc-0048-4bf8-90ca-4c71ed2de1bc",
+        "model": "grok-4.6"
+      },
+      "human_author": "╨Ч╨╡╨╝╤Ж╨╛╨▓ ╨Р╨╗╨╡╨║╤Б╨╡╨╣ <zemtsov@moedelo.org>",
+      "messages": [],
+      "total_additions": 336,
+      "total_deletions": 67,
+      "accepted_lines": 0,
+      "accepted_deletions": 0,
+      "overridden_lines": 336
+    },
+    "213c31d7ec6c0357": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "277546b7-6ad6-4cb4-bf0d-c559ac38e826",
+        "model": "grok-4.6"
+      },
+      "human_author": "╨Ч╨╡╨╝╤Ж╨╛╨▓ ╨Р╨╗╨╡╨║╤Б╨╡╨╣ <zemtsov@moedelo.org>",
+      "messages": [],
+      "total_additions": 529,
+      "total_deletions": 66,
+      "accepted_lines": 137,
+      "accepted_deletions": 18,
+      "overridden_lines": 392
+    },
+    "693920c29a23d78a": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "d0af2d5b-5987-4446-add1-4ed01fd1496a",
+        "model": "grok-4.6"
+      },
+      "human_author": "╨Ч╨╡╨╝╤Ж╨╛╨▓ ╨Р╨╗╨╡╨║╤Б╨╡╨╣ <zemtsov@moedelo.org>",
+      "messages": [],
+      "total_additions": 296,
+      "total_deletions": 26,
+      "accepted_lines": 178,
+      "accepted_deletions": 23,
+      "overridden_lines": 118
+    },
+    "5f79a871f907e41b": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "ed5eec87-679d-4910-8dc4-0597ce7f43dd",
+        "model": "grok-4.6"
+      },
+      "human_author": "╨Ч╨╡╨╝╤Ж╨╛╨▓ ╨Р╨╗╨╡╨║╤Б╨╡╨╣ <zemtsov@moedelo.org>",
+      "messages": [],
+      "total_additions": 416,
+      "total_deletions": 58,
+      "accepted_lines": 380,
+      "accepted_deletions": 8,
+      "overridden_lines": 36
+    },
+    "a46a07f23591a79f": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "08ee7b6b-6dd7-46ab-979e-e030f86ac78c",
+        "model": "grok-4.6"
+      },
+      "human_author": "╨Ч╨╡╨╝╤Ж╨╛╨▓ ╨Р╨╗╨╡╨║╤Б╨╡╨╣ <zemtsov@moedelo.org>",
+      "messages": [],
+      "total_additions": 96,
+      "total_deletions": 8,
+      "accepted_lines": 0,
+      "accepted_deletions": 0,
+      "overridden_lines": 96
+    }
+  }
+}
