@@ -51,6 +51,9 @@ class MessageOut(BaseModel):
     blocks: list[MessageBlockOut] = Field(default_factory=list)
     reply_to: str = ""
     reply_artifact_ids: list[str] = Field(default_factory=list)
+    mesh_region: str = ""
+    mesh_pick: list[float] = Field(default_factory=list)
+    mesh_topo: dict[str, Any] = Field(default_factory=dict)
 
 
 class ChatDetail(BaseModel):
@@ -59,7 +62,27 @@ class ChatDetail(BaseModel):
     created_at: str = ""
     updated_at: str = ""
     current_mesh: str = ""
+    mesh_region: str = ""
+    mesh_pick: list[float] = Field(default_factory=list)
+    mesh_topo: dict[str, Any] = Field(default_factory=dict)
     messages: list[MessageOut] = Field(default_factory=list)
+
+
+class MeshPickRequest(BaseModel):
+    x: float
+    y: float
+    z: float
+    radius: float = 0.022
+    kind: str = "face"
+    mesh: str = ""
+    hops: int = 12
+
+
+class ViewportAimRequest(BaseModel):
+    x: float
+    y: float
+    views: str = ""
+    zoom: float = 1.5
 
 
 class CreateChatRequest(BaseModel):
@@ -90,20 +113,25 @@ class SystemStatus(BaseModel):
     services: dict[str, bool]
     status_text: str
     gpu: GpuQueueInfo = Field(default_factory=GpuQueueInfo)
+    llm_provider: str = "lmstudio"
 
 
 class LLMSettings(BaseModel):
+    provider: str = "lmstudio"
     base_url: str
     api_key: str
     planner_model: str
     vision_model: str
+    reasoning_effort: str = "medium"
 
 
 class LLMSettingsUpdate(BaseModel):
+    provider: str = "lmstudio"
     base_url: str
     api_key: str = "lm-studio"
     planner_model: str
     vision_model: str
+    reasoning_effort: str = "medium"
 
 
 class LLMModelsResponse(BaseModel):

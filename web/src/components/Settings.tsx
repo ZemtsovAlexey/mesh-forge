@@ -1,12 +1,15 @@
 import { useEffect, useState } from "react";
 import { api } from "../api";
-import type { ComfyUISettings, LLMSettings } from "../types";
+import type { ComfyUISettings, LLMSettings, LlmProvider, ReasoningEffort } from "../types";
+import { AITUNNEL_BASE_URL, LLM_PROVIDERS, REASONING_EFFORTS } from "../types";
 
 const EMPTY_LLM: LLMSettings = {
+  provider: "lmstudio",
   base_url: "http://127.0.0.1:1234/v1",
   api_key: "lm-studio",
   planner_model: "",
   vision_model: "",
+  reasoning_effort: "medium",
 };
 
 const EMPTY_COMFY: ComfyUISettings = {
@@ -23,7 +26,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
   const [loading, setLoading] = useState(true);
   const [fetching, setFetching] = useState(false);
   const [probing, setProbing] = useState(false);
-  const [openField, setOpenField] = useState<"planner" | "vision" | null>(null);
+  const [openField, setOpenField] = useState<"provider" | "planner" | "vision" | "effort" | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -55,7 +58,7 @@ export default function Settings({ onClose }: { onClose: () => void }) {
   const loadModels = async () => {
     setFetching(true);
     setError("");
-    setHint("Запрашиваю LM Studio…");
+    setHint(form.provider === "openai" ? "Запрашиваю OpenAI API…" : "Запрашиваю LM Studio…");
     try {
       const res = await api.llmModels(form.base_url, form.api_key);
       const list = res.models;
@@ -99,6 +102,29 @@ export default function Settings({ onClose }: { onClose: () => void }) {
     }
   };
 
+  const applyProvider = (provider: LlmProvider) => {
+    setForm((cur) => {
+      if (provider === cur.provider) return cur;
+      if (provider === "lmstudio") {
+        const looksRemote = /aitunnel|openai\.com|openrouter/i.test(cur.base_url);
+        return {
+          ...cur,
+          provider,
+          base_url: looksRemote ? "http://127.0.0.1:1234/v1" : cur.base_url,
+          api_key: cur.api_key.startsWith("sk-") ? "lm-studio" : cur.api_key || "lm-studio",
+        };
+      }
+      const looksLocal = /:1234\b|127\.0\.0\.1|localhost/i.test(cur.base_url);
+      return {
+        ...cur,
+        provider,
+        base_url: looksLocal ? AITUNNEL_BASE_URL : cur.base_url,
+        api_key: cur.api_key === "lm-studio" ? "" : cur.api_key,
+      };
+    });
+    setOpenField(null);
+  };
+
   const save = async () => {
     try {
       await api.saveComfyui(comfy);
@@ -117,14 +143,55 @@ export default function Settings({ onClose }: { onClose: () => void }) {
           {loading ? <p className="modal-hint">Загрузка…</p> : null}
           {hint ? <p className="modal-hint">{hint}</p> : null}
           {error ? <p className="modal-error">{error}</p> : null}
-          <p className="settings-section">LM Studio</p>
+          <p className="settings-section">LLM</p>
+          <div className="field">
+            Провайдер
+            <div className="picker">
+              <button
+                type="button"
+                className="picker-value"
+                onClick={() => setOpenField((cur) => (cur === "provider" ? null : "provider"))}
+              >
+                <span>{LLM_PROVIDERS.find((item) => item.id === form.provider)?.label || "LM Studio"}</span>
+                <span className="picker-caret" aria-hidden>
+                  {openField === "provider" ? "▴" : "▾"}
+                </span>
+              </button>
+              {openField === "provider" ? (
+                <div className="picker-menu">
+                  {LLM_PROVIDERS.map((item) => (
+                    <button
+                      type="button"
+                      key={item.id}
+                      className={`picker-item${item.id === form.provider ? " active" : ""}`}
+                      onClick={() => applyProvider(item.id)}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+            <span className="field-hint">
+              LM Studio — локальный GPU. OpenAI API — любой Chat Completions endpoint, например AI Tunnel
+              ({AITUNNEL_BASE_URL}).
+            </span>
+          </div>
           <label className="field">
             URL
-            <input value={form.base_url} onChange={(e) => setForm({ ...form, base_url: e.target.value })} />
+            <input
+              value={form.base_url}
+              onChange={(e) => setForm({ ...form, base_url: e.target.value })}
+              placeholder={form.provider === "openai" ? AITUNNEL_BASE_URL : "http://127.0.0.1:1234/v1"}
+            />
           </label>
           <label className="field">
             API key
-            <input value={form.api_key} onChange={(e) => setForm({ ...form, api_key: e.target.value })} />
+            <input
+              value={form.api_key}
+              onChange={(e) => setForm({ ...form, api_key: e.target.value })}
+              placeholder={form.provider === "openai" ? "sk-aitunnel-…" : "lm-studio"}
+            />
           </label>
           <ModelField
             label="Planner / chat model"
@@ -148,6 +215,42 @@ export default function Settings({ onClose }: { onClose: () => void }) {
               setOpenField(null);
             }}
           />
+          <div className="field">
+            Effort
+            <div className="picker">
+              <button
+                type="button"
+                className="picker-value"
+                onClick={() => setOpenField((cur) => (cur === "effort" ? null : "effort"))}
+              >
+                <span>{REASONING_EFFORTS.find((item) => item.id === form.reasoning_effort)?.label || "Средний"}</span>
+                <span className="picker-caret" aria-hidden>
+                  {openField === "effort" ? "▴" : "▾"}
+                </span>
+              </button>
+              {openField === "effort" ? (
+                <div className="picker-menu">
+                  {REASONING_EFFORTS.map((item) => (
+                    <button
+                      type="button"
+                      key={item.id}
+                      className={`picker-item${item.id === form.reasoning_effort ? " active" : ""}`}
+                      onClick={() => {
+                        setForm({ ...form, reasoning_effort: item.id as ReasoningEffort });
+                        setOpenField(null);
+                      }}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+              ) : null}
+            </div>
+            <span className="field-hint">
+              Сколько модель думает перед ответом. Работает на reasoning-моделях (Qwen3, GPT-OSS, R1); остальные могут
+              игнорировать.
+            </span>
+          </div>
           <p className="settings-section">ComfyUI</p>
           <label className="field">
             URL

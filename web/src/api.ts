@@ -1,4 +1,27 @@
-import type { ChatDetail, ChatMessage, ChatSummary, ComfyUISettings, LLMSettings, SystemStatus, ToolCall } from "./types";
+import type {
+  ChatDetail,
+  ChatMessage,
+  ChatSummary,
+  ComfyUISettings,
+  LLMSettings,
+  LlmProvider,
+  MeshElem,
+  MeshTopo,
+  MessageBlock,
+  ReasoningEffort,
+  SystemStatus,
+  ToolCall,
+} from "./types";
+
+export function normalizeEffort(value: string | undefined | null): ReasoningEffort {
+  if (value === "low" || value === "high" || value === "xhigh") return value;
+  return "medium";
+}
+
+export function normalizeProvider(value: string | undefined | null): LlmProvider {
+  if (value === "openai") return "openai";
+  return "lmstudio";
+}
 
 function errorMessage(detail: unknown): string {
   if (typeof detail === "string" && detail.trim()) return detail;
@@ -30,6 +53,18 @@ function asArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
 }
 
+function normalizeTopo(raw: unknown): MeshTopo {
+  const t = raw && typeof raw === "object" && !Array.isArray(raw) ? (raw as MeshTopo) : {};
+  const kind: MeshElem = t.kind === "vertex" || t.kind === "edge" ? t.kind : "face";
+  const edge = Array.isArray(t.edge) ? t.edge.map(Number).filter((n) => Number.isFinite(n)) : [];
+  return {
+    kind,
+    vertex: Number.isFinite(Number(t.vertex)) ? Number(t.vertex) : -1,
+    face: Number.isFinite(Number(t.face)) ? Number(t.face) : -1,
+    edge,
+  };
+}
+
 function normalizeTool(raw: Partial<ToolCall> | null | undefined): ToolCall {
   return {
     id: String(raw?.id || ""),
@@ -41,6 +76,7 @@ function normalizeTool(raw: Partial<ToolCall> | null | undefined): ToolCall {
     summary: String(raw?.summary || ""),
     progress: Number(raw?.progress || 0),
     stage: String(raw?.stage || ""),
+    thinking: String(raw?.thinking || ""),
     artifacts: asArray(raw?.artifacts),
   };
 }
@@ -54,9 +90,16 @@ function normalizeMessage(raw: Partial<ChatMessage> | null | undefined): ChatMes
     attachments: asArray(raw?.attachments),
     tools: asArray<Partial<ToolCall>>(raw?.tools).map(normalizeTool),
     artifacts: asArray(raw?.artifacts),
-    blocks: asArray(raw?.blocks),
+    blocks: asArray<Partial<MessageBlock>>(raw?.blocks).map((block) => ({
+      kind: block?.kind === "tool" ? "tool" : block?.kind === "thinking" ? "thinking" : "text",
+      text: String(block?.text || ""),
+      tool_id: String(block?.tool_id || ""),
+    })),
     reply_to: String(raw?.reply_to || ""),
     reply_artifact_ids: asArray<string>(raw?.reply_artifact_ids).map(String).filter(Boolean),
+    mesh_region: String(raw?.mesh_region || ""),
+    mesh_pick: Array.isArray(raw?.mesh_pick) ? raw.mesh_pick.map(Number).filter((n) => Number.isFinite(n)) : [],
+    mesh_topo: normalizeTopo(raw?.mesh_topo),
   };
 }
 
@@ -67,6 +110,13 @@ export function normalizeChat(raw: Partial<ChatDetail> | null | undefined): Chat
     created_at: String(raw?.created_at || ""),
     updated_at: String(raw?.updated_at || ""),
     current_mesh: String(raw?.current_mesh || ""),
+    mesh_region: String(raw?.mesh_region || ""),
+    mesh_pick: Array.isArray(raw?.mesh_pick) ? raw.mesh_pick.map(Number).filter((n) => Number.isFinite(n)) : [],
+    mesh_topo: normalizeTopo(raw?.mesh_topo),
+    look_view:
+      raw?.look_view && typeof raw.look_view === "object" && !Array.isArray(raw.look_view)
+        ? (raw.look_view as ChatDetail["look_view"])
+        : undefined,
     messages: asArray<Partial<ChatMessage>>(raw?.messages).map(normalizeMessage),
   };
 }
@@ -96,8 +146,32 @@ export const api = {
     ),
   deleteChat: (id: string) => fetch(`/api/chats/${id}`, { method: "DELETE" }).then((r) => json<void>(r)),
   stopChat: (id: string) => fetch(`/api/chats/${id}/stop`, { method: "POST" }).then((r) => json<{ ok: boolean }>(r)),
+  setMeshPick: async (
+    id: string,
+    pick: { x: number; y: number; z: number; radius?: number; kind?: MeshElem; mesh?: string; hops?: number },
+  ) =>
+    json<{ region: string; pick: number[]; topo: MeshTopo }>(
+      await fetch(`/api/chats/${id}/mesh-pick`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(pick),
+      }),
+    ),
+  clearMeshPick: async (id: string) =>
+    json<{ region: string; pick: number[]; topo: MeshTopo }>(await fetch(`/api/chats/${id}/mesh-pick`, { method: "DELETE" })),
+  setViewportAim: async (id: string, aim: { x: number; y: number; views?: string; zoom?: number }) =>
+    json<{ look_view: Record<string, unknown> }>(
+      await fetch(`/api/chats/${id}/viewport-aim`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(aim),
+      }),
+    ),
   status: () => fetch("/api/status").then((r) => json<SystemStatus>(r)),
-  getLlm: () => fetch("/api/settings/llm").then((r) => json<LLMSettings>(r)),
+  getLlm: async () => {
+    const raw = await json<LLMSettings>(await fetch("/api/settings/llm"));
+    return { ...raw, provider: normalizeProvider(raw?.provider), reasoning_effort: normalizeEffort(raw?.reasoning_effort) };
+  },
   saveLlm: (body: LLMSettings) =>
     fetch("/api/settings/llm", {
       method: "PUT",

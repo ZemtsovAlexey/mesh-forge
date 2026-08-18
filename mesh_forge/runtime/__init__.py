@@ -1,4 +1,4 @@
-from .gpu_scheduler import GpuLease, GpuQueueSnapshot, GpuScheduler, get_gpu_scheduler
+from .gpu_scheduler import GpuLease, GpuQueueSnapshot, GpuScheduler, acquire_llm, get_gpu_scheduler
 from .process_runner import ProcessResult, ProcessRunner
 
 __all__ = [
@@ -7,5 +7,6 @@ __all__ = [
     "GpuScheduler",
     "ProcessResult",
     "ProcessRunner",
+    "acquire_llm",
     "get_gpu_scheduler",
 ]

@@ -164,7 +164,7 @@ def start_text_front(
         if not brief.isascii():
             raise ValueError(
                 "Не удалось перевести промпт на английский. "
-                "Проверьте LM Studio и повторите."
+                "Проверьте LLM API и повторите."
             ) from exc
     if not brief:
         raise ValueError("Пустой промпт для front")

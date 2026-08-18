@@ -23,6 +23,70 @@ def _find_config() -> Path:
     return ROOT / "config.yaml"
 
 
+REASONING_EFFORTS = ("low", "medium", "high", "xhigh")
+REASONING_EFFORT_ALIASES = {
+    "extra_high": "xhigh",
+    "extrahigh": "xhigh",
+    "extra": "xhigh",
+    "max": "xhigh",
+    "maximum": "xhigh",
+}
+LLM_PROVIDERS = ("lmstudio", "openai")
+LLM_PROVIDER_ALIASES = {
+    "openai": "openai",
+    "openai_compat": "openai",
+    "openai_compatible": "openai",
+    "openai_api": "openai",
+    "aitunnel": "openai",
+    "ai_tunnel": "openai",
+    "cloud": "openai",
+    "lmstudio": "lmstudio",
+    "lm_studio": "lmstudio",
+    "local": "lmstudio",
+}
+OPENAI_COMPAT_URL_MARKERS = ("aitunnel.ru", "api.openai.com", "openrouter.ai")
+AITUNNEL_BASE_URL = "https://api.aitunnel.ru/v1"
+
+
+def normalize_reasoning_effort(value: str | None) -> str:
+    raw = str(value or "medium").strip().lower().replace("-", "_").replace(" ", "_")
+    raw = REASONING_EFFORT_ALIASES.get(raw, raw)
+    if raw not in REASONING_EFFORTS:
+        return "medium"
+    return raw
+
+
+def normalize_llm_provider(value: str | None, base_url: str | None = None) -> str:
+    raw = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
+    if raw in LLM_PROVIDER_ALIASES:
+        return LLM_PROVIDER_ALIASES[raw]
+    url = (base_url or "").strip().lower()
+    if any(marker in url for marker in OPENAI_COMPAT_URL_MARKERS):
+        return "openai"
+    return "lmstudio"
+
+
+def llm_uses_gpu(config: AppConfig | None = None) -> bool:
+    """True when the LLM endpoint occupies a GPU we serialize with ComfyUI."""
+    cfg = config or load_config()
+    return normalize_llm_provider(cfg.llm.provider, cfg.llm.base_url) == "lmstudio"
+
+
+def llm_display_name(config: AppConfig | None = None) -> str:
+    cfg = config or load_config()
+    if normalize_llm_provider(cfg.llm.provider, cfg.llm.base_url) != "openai":
+        return "LM Studio"
+    url = (cfg.llm.base_url or "").lower()
+    if "aitunnel" in url:
+        return "AI Tunnel"
+    return "OpenAI API"
+
+
+def llm_http_timeout(config: AppConfig | None = None) -> float:
+    cfg = config or load_config()
+    return 90.0 if llm_uses_gpu(cfg) else 600.0
+
+
 @dataclass
 class LLMConfig:
     provider: str = "lmstudio"
@@ -30,6 +94,7 @@ class LLMConfig:
     api_key: str = "lm-studio"
     planner_model: str = "qwen2.5-7b-instruct"
     vision_model: str = "qwen2.5-vl-7b-instruct"
+    reasoning_effort: str = "medium"
 
 
 @dataclass
@@ -81,7 +146,7 @@ class ComfyUIConfig:
     view_denoise: float = 0.58
     view_denoise_turbo: float = 0.72
     # guided edit: how strongly to change the anchor front (keep low to preserve identity)
-    edit_denoise: float = 0.28
+    edit_denoise: float = 0.16
     view_sampler: str = "euler"
     view_scheduler: str = "sgm_uniform"
     # Zero123 novel-view orbits
@@ -193,8 +258,15 @@ def load_config(path: Path | None = None) -> AppConfig:
     if str(gpu_raw.get("shared_gpu") or "").strip().lower() == "auto":
         gpu_raw["shared_gpu"] = None
 
+    llm_raw = dict(data.get("llm") or {})
+    known_llm = set(LLMConfig.__dataclass_fields__)
+    llm_raw = {k: v for k, v in llm_raw.items() if k in known_llm}
+    llm_raw["provider"] = normalize_llm_provider(llm_raw.get("provider"), llm_raw.get("base_url"))
+    if "reasoning_effort" in llm_raw:
+        llm_raw["reasoning_effort"] = normalize_reasoning_effort(llm_raw.get("reasoning_effort"))
+
     return AppConfig(
-        llm=LLMConfig(**(data.get("llm") or {})),
+        llm=LLMConfig(**llm_raw),
         paths=PathsConfig(**paths_raw),
         server=ServerConfig(**(data.get("server") or {})),
         gpu=GPUConfig(**gpu_raw),
@@ -213,11 +285,12 @@ def save_config(config: AppConfig) -> Path:
             data = yaml.safe_load(f) or {}
 
     data["llm"] = {
-        "provider": config.llm.provider,
+        "provider": normalize_llm_provider(config.llm.provider, config.llm.base_url),
         "base_url": config.llm.base_url,
         "api_key": config.llm.api_key,
         "planner_model": config.llm.planner_model,
         "vision_model": config.llm.vision_model,
+        "reasoning_effort": normalize_reasoning_effort(config.llm.reasoning_effort),
     }
     if config.paths.projects or data.get("paths"):
         paths = dict(data.get("paths") or {})
@@ -334,24 +407,48 @@ def update_comfyui_settings(
 
 def update_llm_settings(
     *,
+    provider: str | None = None,
     base_url: str | None = None,
     api_key: str | None = None,
     planner_model: str | None = None,
     vision_model: str | None = None,
+    reasoning_effort: str | None = None,
 ) -> AppConfig:
     config = load_config()
     if base_url is not None:
         config.llm.base_url = base_url.rstrip("/")
         if not config.llm.base_url.endswith("/v1"):
             config.llm.base_url = config.llm.base_url + "/v1"
+    if provider is not None or base_url is not None:
+        config.llm.provider = normalize_llm_provider(
+            provider if provider is not None else config.llm.provider,
+            config.llm.base_url,
+        )
     if api_key is not None:
-        config.llm.api_key = api_key
+        if api_key.strip():
+            config.llm.api_key = api_key.strip()
+        elif config.llm.provider == "lmstudio":
+            config.llm.api_key = "lm-studio"
     if planner_model:
         config.llm.planner_model = planner_model
     if vision_model:
         config.llm.vision_model = vision_model
+    if reasoning_effort is not None:
+        config.llm.reasoning_effort = normalize_reasoning_effort(reasoning_effort)
     save_config(config)
     return config
+
+
+def llm_settings_payload(config: AppConfig | None = None) -> dict[str, str]:
+    cfg = config or load_config()
+    return {
+        "provider": normalize_llm_provider(cfg.llm.provider, cfg.llm.base_url),
+        "base_url": cfg.llm.base_url,
+        "api_key": cfg.llm.api_key,
+        "planner_model": cfg.llm.planner_model,
+        "vision_model": cfg.llm.vision_model,
+        "reasoning_effort": normalize_reasoning_effort(cfg.llm.reasoning_effort),
+    }
 
 
 QUALITY_PRESETS: dict[str, dict[str, Any]] = {

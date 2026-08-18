@@ -12,7 +12,9 @@ from mesh_forge.config import (
     download_comfyui_checkpoints,
     generation_settings_payload,
     load_config,
+    llm_settings_payload,
     missing_comfyui_checkpoints,
+    normalize_llm_provider,
     update_generation_settings,
     update_llm_settings,
 )
@@ -183,6 +185,7 @@ def export_info(manifest: ProjectManifest) -> ExportInfo:
 def system_status(orch: Orchestrator) -> SystemStatus:
     services = orch.system_status()
     snap = get_gpu_scheduler().snapshot()
+    cfg = load_config()
     active = None
     if snap.active is not None:
         active = GpuQueueEntry(
@@ -222,24 +225,26 @@ def system_status(orch: Orchestrator) -> SystemStatus:
             llm_host=getattr(snap, "llm_host", "") or "",
             comfy_host=getattr(snap, "comfy_host", "") or "",
         ),
+        llm_provider=normalize_llm_provider(cfg.llm.provider, cfg.llm.base_url),
     )
 
 
 def get_llm_settings() -> LLMSettings:
-    cfg = load_config()
-    return LLMSettings(
-        base_url=cfg.llm.base_url,
-        api_key=cfg.llm.api_key,
-        planner_model=cfg.llm.planner_model,
-        vision_model=cfg.llm.vision_model,
-    )
+    return LLMSettings(**llm_settings_payload())
 
 
 def llm_client_for(base_url: str, api_key: str) -> LMStudioClient:
     url = (base_url or "http://127.0.0.1:1234/v1").strip().rstrip("/")
     if not url.endswith("/v1"):
         url += "/v1"
-    tmp = AppConfig(llm=LLMConfig(base_url=url, api_key=api_key or "lm-studio"))
+    provider = normalize_llm_provider(None, url)
+    tmp = AppConfig(
+        llm=LLMConfig(
+            provider=provider,
+            base_url=url,
+            api_key=api_key or ("lm-studio" if provider == "lmstudio" else api_key),
+        )
+    )
     return LMStudioClient(tmp)
 
 
@@ -260,16 +265,20 @@ def fetch_llm_models(base_url: str, api_key: str) -> LLMModelsResponse:
 def save_llm_settings(
     orch: Orchestrator,
     *,
+    provider: str = "lmstudio",
     base_url: str,
     api_key: str,
     planner_model: str,
     vision_model: str,
+    reasoning_effort: str = "medium",
 ) -> tuple[str, SystemStatus]:
     update_llm_settings(
+        provider=provider,
         base_url=base_url,
-        api_key=api_key or "lm-studio",
+        api_key=api_key,
         planner_model=planner_model,
         vision_model=vision_model,
+        reasoning_effort=reasoning_effort,
     )
     orch.reload_config()
     return orch.llm.models_status(), system_status(orch)

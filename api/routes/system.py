@@ -21,7 +21,9 @@ from mesh_forge.config import (
     AppConfig,
     generation_settings_payload,
     load_config,
+    llm_settings_payload,
     normalize_comfyui_base_url,
+    normalize_llm_provider,
     update_comfyui_settings,
     update_generation_settings,
     update_llm_settings,
@@ -62,7 +64,12 @@ def _system_status() -> SystemStatus:
     services = {"lmstudio": llm.health_check(), "comfyui": comfy.health_check()}
     lines = [f"{k}: {'OK' if v else 'missing'}" for k, v in services.items()]
     lines.append(get_gpu_scheduler().status_text())
-    return SystemStatus(services=services, status_text="\n".join(lines), gpu=_gpu_queue_info())
+    return SystemStatus(
+        services=services,
+        status_text="\n".join(lines),
+        gpu=_gpu_queue_info(),
+        llm_provider=normalize_llm_provider(cfg.llm.provider, cfg.llm.base_url),
+    )
 
 
 @router.get("/status", response_model=SystemStatus)
@@ -72,13 +79,7 @@ def get_status() -> SystemStatus:
 
 @router.get("/settings/llm", response_model=LLMSettings)
 def get_llm() -> LLMSettings:
-    cfg = load_config()
-    return LLMSettings(
-        base_url=cfg.llm.base_url,
-        api_key=cfg.llm.api_key,
-        planner_model=cfg.llm.planner_model,
-        vision_model=cfg.llm.vision_model,
-    )
+    return LLMSettings(**llm_settings_payload())
 
 
 @router.put("/settings/llm")
@@ -87,10 +88,12 @@ def put_llm(body: LLMSettingsUpdate) -> dict:
         raise HTTPException(400, "Select planner and vision models")
     try:
         update_llm_settings(
+            provider=body.provider,
             base_url=body.base_url,
             api_key=body.api_key,
             planner_model=body.planner_model,
             vision_model=body.vision_model,
+            reasoning_effort=body.reasoning_effort,
         )
         get_runner().reload_agent()
     except Exception as exc:
@@ -131,7 +134,16 @@ def get_llm_models(
     url = (base_url or "http://127.0.0.1:1234/v1").strip().rstrip("/")
     if not url.endswith("/v1"):
         url += "/v1"
-    client = LMStudioClient(AppConfig(llm=LLMConfig(base_url=url, api_key=api_key or "lm-studio")))
+    provider = normalize_llm_provider(None, url)
+    client = LMStudioClient(
+        AppConfig(
+            llm=LLMConfig(
+                provider=provider,
+                base_url=url,
+                api_key=api_key or ("lm-studio" if provider == "lmstudio" else api_key),
+            )
+        )
+    )
     models = client.list_models()
     cfg = load_config()
     planner = cfg.llm.planner_model if cfg.llm.planner_model in models else (models[0] if models else None)

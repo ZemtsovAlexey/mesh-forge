@@ -3,12 +3,39 @@ from __future__ import annotations
 import base64
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 from openai import OpenAI
 
-from mesh_forge.config import AppConfig, load_config
+from mesh_forge.config import AppConfig, llm_display_name, llm_http_timeout, load_config, normalize_reasoning_effort
+
+
+def live_reasoning_effort() -> str:
+    return normalize_reasoning_effort(load_config().llm.reasoning_effort)
+
+
+def completion_kwargs(
+    *,
+    model: str,
+    messages: list[dict[str, Any]],
+    stream: bool = False,
+    timeout: float | None = None,
+    effort: str | None = None,
+) -> dict[str, Any]:
+    """Chat Completions payload. Skip temperature so reasoning_effort can apply."""
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "reasoning_effort": normalize_reasoning_effort(effort or live_reasoning_effort()),
+    }
+    if stream:
+        kwargs["stream"] = True
+    if timeout is not None:
+        kwargs["timeout"] = timeout
+    return kwargs
+
 
 DEFAULT_CREATE_QUESTIONS = [
     "Что именно моделируем? (объект / персонаж / здание…)",
@@ -42,27 +69,104 @@ Rules:
 If you cannot map the request, return empty operations and explain in summary."""
 
 
+def inspect_vision_prompt(*, kind: str, question: str = "") -> str:
+    """System-ish user prompt for look(). Mesh must not treat camera labels as the request."""
+    prompt = "Ты глаза 3D-агента. Отвечай по-русски. "
+    if kind == "mask":
+        prompt += (
+            "Красное на mesh — то, что УДАЛЯТ. Глина/беж — оставить. "
+            "Оцени текущий overlay как proposal на удаление: попадает ли красное только в лишний кусок, "
+            "не залезает ли на юбку/тело, не пропущена ли часть отростка. "
+            "Ответ: 1–3 коротких предложения по-русски без строки NEXT и без списка действий. "
+            "Если виден риск ошибки, прямо скажи где именно: слишком много, слишком мало или не то место."
+        )
+    elif kind == "mesh":
+        prompt += (
+            "Это превью одного mesh на сетке пола. "
+            "Строки «камера: …» — только ракурс, это НЕ запрос пользователя и не то, с чем надо сверять кадр. "
+            "Не пиши про соответствие ракурсу, chibi, стиль, 3D-печать и «запрос [image …]». "
+            "Смотри свободно на форму. Если дан запрос пользователя — есть ли то, о чём он говорит, "
+            "где это (слева/справа/сверху/снизу, на юбке/голове/руке), мешает ли соседняя деталь. "
+            "Коротко, без чеклиста."
+        )
+    else:
+        prompt += (
+            "Опиши, что видишь. Кадр нужен для реконструкции ОДНОГО целого объекта. "
+            "Последней строкой РОВНО одно из:\n"
+            "NEXT: regen — несколько объектов, обрезка (нет ног/верха), не тот объект, "
+            "сильный брак формы, ракурс 3/4 вместо прямого вида, наклон/перекос, "
+            "ноги разной длины, сильная перспектива или рыбий глаз. "
+            "Если несколько кадров front/left/back/right: не ортогональный вид, "
+            "спина как фасад, профиль как 3/4, кривая геометрия — тоже regen.\n"
+            "NEXT: cutout — один целый объект, ровный ракурс, но есть пол, студия, стена или фон, "
+            "в том числе если фон похож на объект.\n"
+            "NEXT: mesh — один целый объект, ровный ортогональный ракурс, "
+            "на чистом или прозрачном фоне (clay без пола тоже mesh)."
+        )
+    focus = (question or "").strip()
+    if focus:
+        prompt += f"\nЗапрос пользователя: {focus}"
+    return prompt
+
+
 class LMStudioClient:
     def __init__(self, config: AppConfig | None = None):
         self.config = config or load_config()
         self.client = OpenAI(
             base_url=self.config.llm.base_url,
             api_key=self.config.llm.api_key,
+            timeout=llm_http_timeout(self.config),
         )
 
     def chat(self, model: str, messages: list[dict[str, Any]], temperature: float = 0.2) -> str:
+        _ = temperature
         from mesh_forge import progress as prog
-        from mesh_forge.runtime import get_gpu_scheduler
+        from mesh_forge.runtime import acquire_llm
 
         project_id = prog.current_project_id()
-        with get_gpu_scheduler().acquire("LM Studio", kind="llm", project_id=project_id):
+        with acquire_llm(project_id=project_id):
             prog.raise_if_cancelled(project_id)
-            response = self.client.chat.completions.create(
-                model=model,
-                messages=messages,
-                temperature=temperature,
-            )
+            response = self._create(model=model, messages=messages)
             return response.choices[0].message.content or ""
+
+    def stream_chat(
+        self,
+        model: str,
+        messages: list[dict[str, Any]],
+        temperature: float = 0.2,
+        *,
+        on_delta: Callable[[str, str], None] | None = None,
+        timeout: float = 600.0,
+    ) -> str:
+        """Stream a completion. on_delta(kind, text) with kind thinking|text."""
+        _ = temperature
+        from mesh_forge import progress as prog
+        from mesh_forge.runtime import acquire_llm
+
+        project_id = prog.current_project_id()
+        chunks: list[str] = []
+        with acquire_llm(project_id=project_id):
+            prog.raise_if_cancelled(project_id)
+            stream = self._create(model=model, messages=messages, stream=True, timeout=timeout)
+            for chunk in stream:
+                prog.raise_if_cancelled(project_id)
+                if not chunk.choices:
+                    continue
+                for kind, text in completion_delta_parts(chunk.choices[0].delta):
+                    if kind == "text":
+                        chunks.append(text)
+                    if on_delta:
+                        on_delta(kind, text)
+        return "".join(chunks)
+
+    def _create(self, *, model: str, messages: list[dict[str, Any]], stream: bool = False, timeout: float | None = None):
+        kwargs = completion_kwargs(model=model, messages=messages, stream=stream, timeout=timeout)
+        try:
+            return self.client.chat.completions.create(**kwargs)
+        except Exception:
+            kwargs.pop("reasoning_effort", None)
+            kwargs["temperature"] = 0.2
+            return self.client.chat.completions.create(**kwargs)
 
     def plan_edit(self, instruction: str, mesh_stats: dict[str, Any] | None = None) -> dict[str, Any]:
         user_content = f"Instruction: {instruction}\n"
@@ -177,7 +281,8 @@ Clarify rules (draft_prompt_en in your JSON is ignored — server translates use
         if not cleaned or not _looks_english(cleaned):
             return cleaned
         system = (
-            "Переведи текст на русский. Сохрани списки и строки вида NEXT: regen|cutout|mesh "
+            "Переведи текст на русский. Сохрани списки и строки вида "
+            "NEXT: regen|cutout|mesh|look|mask ok|mask shrink|mask grow|mask retry|mask click "
             "(ключи NEXT не переводи). Ответ — только перевод, без кавычек и пояснений."
         )
         try:
@@ -302,6 +407,8 @@ Rules:
         images: list[tuple[str, Path]],
         *,
         question: str = "",
+        kind: str = "auto",
+        on_delta: Callable[[str, str], None] | None = None,
     ) -> str:
         """On-demand VLM look for the chat agent (Russian)."""
         parts: list[dict[str, Any]] = []
@@ -310,57 +417,194 @@ Rules:
             if not encoded:
                 continue
             mime, b64 = encoded
-            parts.append({"type": "text", "text": f"[image {label}]"})
+            caption = f"камера: {label}" if kind in {"mesh", "mask"} else f"[image {label}]"
+            parts.append({"type": "text", "text": caption})
             parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
         if not parts:
             return ""
-        is_mesh = any("mesh" in str(label).lower() for label, _ in images)
-        prompt = (
-            "Ты глаза 3D-агента. Отвечай СТРОГО по-русски, коротко, без вступлений. "
-            "Опиши: объект, сколько штук, обрезан ли, фон, заметные дефекты, соответствие запросу."
-        )
-        if is_mesh:
-            prompt += (
-                " Кадры — превью ОДНОГО mesh: объект стоит на сетке пола (+Y вверх). "
-                "Подпись кадра говорит ракурс (front/left/back/right/top/viewer) и если это крупный план. "
-                "Наклон камеры — не наклон модели. Несколько кадров сравни между собой: "
-                "что видно сбоку/сзади/сверху, чего нет на обзоре. "
-                "Сравни левый и правый бок: оба подлокотника, обе ножки, сиденье целиком? "
-                "Если один бок короче, деталь отпилена, ровный вертикальный срез, дыра на месте "
-                "подлокотника/сиденья/спинки — это БРАК ПРАВКИ, не шум. Напиши restore_mesh. "
-                "Не пиши «отлично», «успешно», «визуально целы», если не хватает части. "
-                "Если кадр closeup/region — опиши именно эту деталь (дыры, иглы, обрыв геометрии). "
-                "Не пиши NEXT. Не предлагай generate_image / images_to_mesh / новую картинку. "
-                "Мелкий шум и дырки в резьбе при ЦЕЛЫХ основных частях (спинка, сиденье, "
-                "оба подлокотника, ножки) — норма реконструкции, не повод чинить."
-            )
-        else:
-            prompt += (
-                " Кадр нужен для реконструкции ОДНОГО целого объекта. "
-                "Последней строкой РОВНО одно из:\n"
-                "NEXT: regen — несколько объектов, обрезка (нет ног/верха), не тот объект, "
-                "сильный брак формы, ракурс 3/4 вместо прямого вида, наклон/перекос, "
-                "ноги разной длины, сильная перспектива или рыбий глаз. "
-                "Если несколько кадров front/left/back/right: не ортогональный вид, "
-                "спина как фасад, профиль как 3/4, кривая геометрия — тоже regen.\n"
-                "NEXT: cutout — один целый объект, ровный ракурс, но есть пол, студия, стена или фон, "
-                "в том числе если фон похож на объект.\n"
-                "NEXT: mesh — один целый объект, ровный ортогональный ракурс, "
-                "на чистом или прозрачном фоне (clay без пола тоже mesh)."
-            )
-        focus = (question or "").strip()
-        if focus:
-            prompt += f"\nВопрос агента: {focus}"
+        resolved = kind
+        if resolved == "auto":
+            resolved = "mesh" if any("mesh" in str(label).lower() for label, _ in images) else "photo"
+        prompt = inspect_vision_prompt(kind=resolved, question=question)
         content: list[dict[str, Any]] = [{"type": "text", "text": prompt}, *parts]
+        messages = [{"role": "user", "content": content}]
         try:
-            note = self.chat(
+            note = self.stream_chat(
                 self.config.llm.vision_model,
-                [{"role": "user", "content": content}],
+                messages,
                 temperature=0.2,
+                on_delta=on_delta,
             ).strip()
         except Exception:
-            return ""
-        return self._ensure_russian(note)
+            try:
+                note = self.chat(
+                    self.config.llm.vision_model,
+                    messages,
+                    temperature=0.2,
+                ).strip()
+            except Exception:
+                return ""
+        translated = self._ensure_russian(note)
+        if translated != note and on_delta and translated:
+            on_delta("replace", translated)
+        return translated
+
+    def aim_mesh_mask(
+        self,
+        images: list[tuple[str, Path]],
+        *,
+        target: str,
+    ) -> dict[str, Any]:
+        """Look-frame aim {views,x,y,confidence,note} for a mesh part to delete."""
+        parts: list[dict[str, Any]] = []
+        for label, path in images:
+            encoded = _encode_image(path)
+            if not encoded:
+                continue
+            mime, b64 = encoded
+            parts.append({"type": "text", "text": f"кадр: {label}"})
+            parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+        if not parts or not (target or "").strip():
+            return {}
+        prompt = (
+            "Нужно УДАЛИТЬ один лишний кусок mesh (отросток, лепесток, нарост на юбке/теле). "
+            f"Цель: {target.strip()}\n"
+            "Верни ТОЛЬКО JSON без markdown:\n"
+            '{"views":"front","x":0.82,"y":0.70,"x0":0.74,"y0":0.62,"x1":0.92,"y1":0.80,'
+            '"confidence":0.8,"note":"ru"}\n'
+            "views — кадр, где кусок виден как отдельная деталь на картинке. "
+            "x,y — центр куска: 0,0 верхний левый, 1,1 нижний правый. "
+            "x0,y0,x1,y1 — тугой прямоугольник ТОЛЬКО вокруг лишнего куска, не юбка и не всё тело. "
+            "confidence 0–1. note — одно короткое предложение по-русски."
+        )
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}, *parts]
+        try:
+            text = self.chat(
+                self.config.llm.vision_model,
+                [{"role": "user", "content": content}],
+                temperature=0.1,
+            )
+        except Exception:
+            return {}
+        data = _parse_json_response(text)
+        if data.get("parse_error"):
+            return {}
+        views = str(data.get("views") or "right").strip().lower().split(",")[0]
+        if views not in {"front", "left", "right", "back", "top", "viewer"}:
+            views = "right"
+        try:
+            x = float(data.get("x", 0.5))
+            y = float(data.get("y", 0.5))
+            conf = float(data.get("confidence", 0.5))
+        except (TypeError, ValueError):
+            return {}
+        out = {
+            "views": views,
+            "x": max(0.0, min(1.0, x)),
+            "y": max(0.0, min(1.0, y)),
+            "confidence": max(0.0, min(1.0, conf)),
+            "note": str(data.get("note") or "").strip(),
+        }
+        for key in ("x0", "y0", "x1", "y1"):
+            if key in data:
+                try:
+                    out[key] = max(0.0, min(1.0, float(data[key])))
+                except (TypeError, ValueError):
+                    pass
+        return out
+
+    def detect_mesh_part_multi_view(
+        self,
+        images: list[tuple[str, Path]],
+        *,
+        target: str,
+    ) -> list[dict[str, Any]]:
+        """Per-view detections for a removable mesh part across multiple cameras."""
+        parts: list[dict[str, Any]] = []
+        for label, path in images:
+            encoded = _encode_image(path)
+            if not encoded:
+                continue
+            mime, b64 = encoded
+            parts.append({"type": "text", "text": f"кадр: {label}"})
+            parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+        if not parts or not (target or "").strip():
+            return []
+        prompt = (
+            "Нужно найти один лишний кусок mesh, который надо удалить. "
+            f"Цель: {target.strip()}\n"
+            "Посмотри ВСЕ кадры и верни ТОЛЬКО JSON без markdown:\n"
+            '{"observations":['
+            '{"view":"right","visible":true,"confidence":0.82,"x0":0.72,"y0":0.58,"x1":0.88,"y1":0.80,'
+            '"kind":"protrusion","touchesBody":true,"note":"коротко по-русски"}'
+            "]}\n"
+            "Правила:\n"
+            "- observations: один объект на каждый кадр, даже если кусок не виден.\n"
+            "- view: имя кадра как в подписи (front/right/back/left/viewer/top).\n"
+            "- visible=false, если на этом кадре кусок не различим.\n"
+            "- Если visible=false, confidence <= 0.35 и box не заполняй.\n"
+            "- Если visible=true, box должен быть ТОЛЬКО вокруг лишнего куска, не вокруг юбки/тела.\n"
+            "- kind: protrusion | patch | unknown.\n"
+            "- touchesBody=true, если кусок сливается с телом/юбкой в месте крепления.\n"
+            "- note: одно короткое предложение по-русски."
+        )
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}, *parts]
+        try:
+            text = self.chat(
+                self.config.llm.vision_model,
+                [{"role": "user", "content": content}],
+                temperature=0.1,
+            )
+        except Exception:
+            return []
+        return parse_multi_view_mask_detection(text)
+
+    def review_mesh_mask(
+        self,
+        images: list[tuple[str, Path]],
+        *,
+        target: str,
+    ) -> dict[str, Any]:
+        """Judge a red overlay: ok / too_much / too_little / wrong / missed / tiny_spot / partial."""
+        parts: list[dict[str, Any]] = []
+        for label, path in images:
+            encoded = _encode_image(path)
+            if not encoded:
+                continue
+            mime, b64 = encoded
+            parts.append({"type": "text", "text": f"кадр: {label}"})
+            parts.append({"type": "image_url", "image_url": {"url": f"data:{mime};base64,{b64}"}})
+        if not parts:
+            return {}
+        goal = (target or "лишний отросток").strip()
+        prompt = (
+            "Красное на mesh — то, что УДАЛЯТ. Глина/беж — оставить. "
+            f"Нужно удалить только: {goal}\n"
+            "Посмотри ВСЕ кадры. Верни ТОЛЬКО JSON без markdown:\n"
+            '{"verdict":"ok","confidence":0.8,"note":"ru","views":"right","x":0.5,"y":0.5}\n'
+            "verdict:\n"
+            "- ok — красное ровно лишний кусок, юбка/тело не задеты, кусок покрыт целиком\n"
+            "- too_much — красное залезло на юбку/тело/руку\n"
+            "- too_little — отросток виден, но часть его не красная\n"
+            "- wrong — красное не на том месте\n"
+            "- missed — красного почти не видно\n"
+            "- tiny_spot — видно только маленькую красную точку/пятно на юбке, это НЕ весь отросток\n"
+            "- partial — красное покрывает только часть выступа, а не весь лишний кусок\n"
+            "views,x,y — кадр и точка, куда целиться если надо поправить "
+            "(0,0 верхний левый). "
+            "Если сомневаешься между ok и tiny_spot/partial, НЕЛЬЗЯ выбирать ok. "
+            "note — одно короткое предложение по-русски."
+        )
+        content: list[dict[str, Any]] = [{"type": "text", "text": prompt}, *parts]
+        try:
+            text = self.chat(
+                self.config.llm.vision_model,
+                [{"role": "user", "content": content}],
+                temperature=0.1,
+            )
+        except Exception:
+            return {}
+        return parse_mask_review(text)
 
     def describe_image(
         self,
@@ -424,7 +668,7 @@ Rules:
             return False
 
     def list_models(self) -> list[str]:
-        """Return model IDs exposed by LM Studio (loaded models)."""
+        """Return model IDs from the OpenAI-compatible /v1/models endpoint."""
         try:
             response = self.client.models.list()
             ids = [m.id for m in response.data if getattr(m, "id", None)]
@@ -433,14 +677,19 @@ Rules:
             return []
 
     def models_status(self) -> str:
+        name = llm_display_name(self.config)
         if not self.health_check():
-            return "LM Studio API недоступен. Запустите Local Server в LM Studio."
+            if name == "LM Studio":
+                return "LM Studio API недоступен. Запустите Local Server в LM Studio."
+            return f"{name} недоступен. Проверьте URL и API key."
         models = self.list_models()
         if not models:
-            return (
-                "API отвечает, но моделей нет. Загрузите модель в LM Studio "
-                "(Chat → Load model) и обновите список."
-            )
+            if name == "LM Studio":
+                return (
+                    "API отвечает, но моделей нет. Загрузите модель в LM Studio "
+                    "(Chat → Load model) и обновите список."
+                )
+            return f"{name} отвечает, но /v1/models пуст. Проверьте ключ и каталог моделей."
         lines = [f"Доступно моделей: {len(models)}", ""]
         for mid in models:
             mark = []
@@ -451,6 +700,35 @@ Rules:
             suffix = f" ← {', '.join(mark)}" if mark else ""
             lines.append(f"  • {mid}{suffix}")
         return "\n".join(lines)
+
+
+def completion_delta_parts(delta: Any) -> list[tuple[str, str]]:
+    """Split an OpenAI/LM Studio chat delta into (thinking|text, chunk) pairs."""
+    from mesh_forge.agent.gpu_model import reasoning_text
+
+    if delta is None:
+        return []
+    extra = getattr(delta, "model_extra", None)
+    if extra is None and isinstance(delta, dict):
+        extra = delta
+    extra = extra or {}
+    parts: list[tuple[str, str]] = []
+    for field_name in ("reasoning", "reasoning_content"):
+        raw = getattr(delta, field_name, None)
+        if raw is None and isinstance(delta, dict):
+            raw = delta.get(field_name)
+        if raw is None and isinstance(extra, dict):
+            raw = extra.get(field_name)
+        text = reasoning_text(raw)
+        if text:
+            parts.append(("thinking", text))
+            break
+    content = getattr(delta, "content", None)
+    if content is None and isinstance(delta, dict):
+        content = delta.get("content")
+    if isinstance(content, str) and content:
+        parts.append(("text", content))
+    return parts
 
 
 def _encode_image(path: Path) -> tuple[str, str] | None:
@@ -466,7 +744,7 @@ def _encode_image(path: Path) -> tuple[str, str] | None:
     return mime, base64.b64encode(path.read_bytes()).decode()
 
 
-def _parse_json_response(text: str) -> dict[str, Any]:
+def _parse_json_response(text: str) -> Any:
     text = text.strip()
     fence = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
     if fence:
@@ -475,6 +753,105 @@ def _parse_json_response(text: str) -> dict[str, Any]:
         return json.loads(text)
     except json.JSONDecodeError:
         return {"operations": [], "summary": text, "parse_error": True}
+
+
+def parse_mask_review(text: str) -> dict[str, Any]:
+    data = _parse_json_response(text)
+    if not isinstance(data, dict):
+        return {}
+    if data.get("parse_error"):
+        return {}
+    verdict = str(data.get("verdict") or "").strip().lower()
+    aliases = {
+        "ok": "ok",
+        "good": "ok",
+        "correct": "ok",
+        "too_much": "too_much",
+        "too much": "too_much",
+        "over": "too_much",
+        "too_little": "too_little",
+        "too little": "too_little",
+        "under": "too_little",
+        "wrong": "wrong",
+        "missed": "missed",
+        "miss": "missed",
+        "none": "missed",
+        "tiny_spot": "tiny_spot",
+        "tiny spot": "tiny_spot",
+        "spot": "tiny_spot",
+        "partial": "partial",
+        "part": "partial",
+    }
+    verdict = aliases.get(verdict, "")
+    if verdict not in {"ok", "too_much", "too_little", "wrong", "missed", "tiny_spot", "partial"}:
+        return {}
+    views = str(data.get("views") or "").strip().lower().split(",")[0]
+    if views not in {"front", "left", "right", "back", "top", "viewer"}:
+        views = ""
+    try:
+        conf = float(data.get("confidence", 0.5))
+    except (TypeError, ValueError):
+        conf = 0.5
+    try:
+        x = float(data.get("x", 0.5))
+        y = float(data.get("y", 0.5))
+    except (TypeError, ValueError):
+        x, y = 0.5, 0.5
+    return {
+        "verdict": verdict,
+        "confidence": max(0.0, min(1.0, conf)),
+        "note": str(data.get("note") or "").strip(),
+        "views": views,
+        "x": max(0.0, min(1.0, x)),
+        "y": max(0.0, min(1.0, y)),
+    }
+
+
+def parse_multi_view_mask_detection(text: str) -> list[dict[str, Any]]:
+    data = _parse_json_response(text)
+    if not isinstance(data, dict):
+        return []
+    if data.get("parse_error"):
+        return []
+    raw = data.get("observations")
+    if not isinstance(raw, list):
+        return []
+    out: list[dict[str, Any]] = []
+    valid_views = {"front", "left", "right", "back", "top", "viewer"}
+    valid_kinds = {"protrusion", "patch", "unknown"}
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        view = str(item.get("view") or "").strip().lower().split(",")[0]
+        if view not in valid_views:
+            continue
+        visible = bool(item.get("visible"))
+        try:
+            conf = float(item.get("confidence", 0.0))
+        except (TypeError, ValueError):
+            conf = 0.0
+        obs = {
+            "view": view,
+            "visible": visible,
+            "confidence": max(0.0, min(1.0, conf)),
+            "kind": str(item.get("kind") or "unknown").strip().lower(),
+            "touchesBody": bool(item.get("touchesBody")),
+            "note": str(item.get("note") or "").strip(),
+        }
+        if obs["kind"] not in valid_kinds:
+            obs["kind"] = "unknown"
+        if visible:
+            try:
+                x0 = max(0.0, min(1.0, float(item.get("x0"))))
+                y0 = max(0.0, min(1.0, float(item.get("y0"))))
+                x1 = max(0.0, min(1.0, float(item.get("x1"))))
+                y1 = max(0.0, min(1.0, float(item.get("y1"))))
+            except (TypeError, ValueError):
+                continue
+            obs["x0"], obs["x1"] = sorted((x0, x1))
+            obs["y0"], obs["y1"] = sorted((y0, y1))
+        out.append(obs)
+    return out
 
 
 _VIEW_PREFIXES = ("front:", "left:", "back:", "right:", "view:")

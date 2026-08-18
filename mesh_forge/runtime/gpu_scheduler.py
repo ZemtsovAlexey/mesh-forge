@@ -5,6 +5,8 @@ import logging
 import threading
 import time
 from collections import deque
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from typing import Callable, Literal
 
@@ -14,7 +16,7 @@ from mesh_forge.runtime.gpu_handoff import queues_are_split, service_host_key, s
 logger = logging.getLogger("mesh_forge.gpu")
 
 GpuKind = Literal["llm", "comfy"]
-HandoffFn = Callable[[GpuKind, GpuKind], None]
+HandoffFn = Callable[[GpuKind | None, GpuKind], None]
 
 
 def _noop_handoff(_from: GpuKind, _to: GpuKind) -> None:
@@ -160,11 +162,11 @@ class _GpuLane:
 
         assert lease is not None
         try:
-            if do_handoff and prev_kind is not None:
+            if do_handoff:
                 try:
                     self._handoff(prev_kind, kind)
                 except Exception:
-                    pass
+                    logger.exception("GPU VRAM handoff %s → %s failed", prev_kind, kind)
             if project_id:
                 prog.raise_if_cancelled(project_id)
                 if do_handoff:
@@ -181,7 +183,7 @@ class _GpuLane:
             return None
         self._waiters.popleft()
         prev_kind = self._last_kind
-        do_handoff = prev_kind is not None and prev_kind != waiter.kind
+        do_handoff = prev_kind != waiter.kind
         lease = GpuLease(
             self,
             waiter.kind,
@@ -297,13 +299,13 @@ class GpuScheduler:
             comfy_host = "?"
         if split:
             logger.info(
-                "GPU queues split: LM Studio @ %s, ComfyUI @ %s — no VRAM handoff",
+                "GPU queues split: LLM @ %s, ComfyUI @ %s — no VRAM handoff",
                 llm_host,
                 comfy_host,
             )
         else:
             logger.info(
-                "GPU queue shared: LM Studio @ %s, ComfyUI @ %s — unload on kind switch",
+                "GPU queue shared: LLM @ %s, ComfyUI @ %s — unload on kind switch",
                 llm_host,
                 comfy_host,
             )
@@ -382,3 +384,22 @@ _scheduler = GpuScheduler()
 
 def get_gpu_scheduler() -> GpuScheduler:
     return _scheduler
+
+
+@contextmanager
+def acquire_llm(*, project_id: str | None = None, label: str | None = None) -> Iterator[GpuLease | None]:
+    """Take the LLM GPU slot for local LM Studio; no-op for remote OpenAI APIs."""
+    from mesh_forge.config import llm_display_name, llm_uses_gpu, load_config
+
+    try:
+        cfg = load_config()
+        uses_gpu = llm_uses_gpu(cfg)
+        slot_label = label or llm_display_name(cfg)
+    except Exception:
+        uses_gpu = True
+        slot_label = label or "LM Studio"
+    if not uses_gpu:
+        yield None
+        return
+    with get_gpu_scheduler().acquire(slot_label, kind="llm", project_id=project_id) as lease:
+        yield lease

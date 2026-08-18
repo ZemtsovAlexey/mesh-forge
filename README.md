@@ -6,8 +6,8 @@
 
 - чат как в Cursor: тулы свёрнутыми карточками, стриминг, Stop
 - картинки в ленте (lightbox), STL/OBJ — Three.js прямо в сообщении (на весь экран)
-- агент на [pydantic-ai](https://ai.pydantic.dev/) + LM Studio
-- тулы: `generate_image`, `generate_views`, `remove_background`, `images_to_mesh` (1–4 фото, без pad до 4), `look`, `inspect_mesh`, `repair_mesh`, `orient_mesh`, `scale_mesh`, `smooth_mesh`, `decimate_mesh`, `carve_mesh`
+- агент на [pydantic-ai](https://ai.pydantic.dev/) + OpenAI-compatible LLM (LM Studio или облачный API)
+- тулы: `generate_image`, `generate_views`, `remove_background`, `images_to_mesh` (1–4 фото), `look`, `mask_mesh`, `remove_mesh`, `restore_mesh`, `orient_mesh`, `scale_mesh`, `smooth_mesh`, `remesh_mesh`, `fill_mesh`, `split_mesh`, `join_mesh`, `match_mesh`, `extract_mesh`, `offset_mesh`, `add_mesh`, `restore_patch`
 - knobs на каждый generate-вызов: seed, quality (draft/quality), steps, cfg, style, guidance
 
 ## Быстрый старт
@@ -27,7 +27,14 @@ cd C:\Users\ZemtsovAlexey\Projects\mesh-forge
 
 UI: `http://<host>:7860`
 
-Нужны **LM Studio** (`http://127.0.0.1:1234/v1`) с моделью, у которой есть function calling, и **ComfyUI** (`http://127.0.0.1:8188`). Vision-модель — отдельно в настройках чата.
+Нужен **LLM** с function calling и **ComfyUI** (`http://127.0.0.1:8188`). Vision-модель — отдельно в настройках чата.
+
+LLM — любой OpenAI Chat Completions endpoint:
+
+- **LM Studio** локально: `http://127.0.0.1:1234/v1`, ключ `lm-studio`
+- **OpenAI-compatible** (например [AI Tunnel](https://aitunnel.ru)): `https://api.aitunnel.ru/v1`, ключ `sk-aitunnel-…`, модель вроде `gpt-5.6-luna`
+
+Переключатель провайдера — в ⚙ Настройках. Облачный LLM не занимает локальный GPU и не выгружает ComfyUI.
 
 ## ComfyUI
 
@@ -71,7 +78,7 @@ ComfyUI можно держать на другой машине: в Настр�
 
 ## Конфиг
 
-Первый запуск создаёт `config.yaml`. Проверь `llm.*`, `comfyui.*`, `paths.projects`. `gpu.sequential_models` выгружает LLM/Comfy при смене слота — только если оба на одном хосте (для 8GB VRAM). Если `llm.base_url` и `comfyui.base_url` указывают на разные машины, очереди независимы и выгрузки нет. Принудительно: `gpu.shared_gpu: true|false`.
+Первый запуск создаёт `config.yaml`. Проверь `llm.*`, `comfyui.*`, `paths.projects`. `gpu.sequential_models` выгружает LLM/Comfy при смене слота — только если оба на одном хосте (для 8GB VRAM) и LLM — локальный LM Studio. Если `llm.provider: openai` или `llm.base_url` и `comfyui.base_url` указывают на разные машины, очереди независимы и выгрузки нет. Принудительно: `gpu.shared_gpu: true|false`. Один и тот же ПК должен быть одним хостом в обоих URL (не `127.0.0.1` у LLM и LAN-IP у Comfy). ComfyUI стартует с `--disable-smart-memory`; перед локальным LM Studio агент ждёт падения VRAM после `/free` и при необходимости перезапускает локальный процесс.
 
 ## Скрипты
 

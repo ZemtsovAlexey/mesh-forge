@@ -1,5 +1,12 @@
 import type { SystemStatus } from "../types";
 
+function llmTitle(status: SystemStatus, ok: boolean | undefined) {
+  const remote = status.llm_provider === "openai";
+  const name = remote ? "OpenAI API" : "LM Studio";
+  if (ok) return name;
+  return remote ? "OpenAI API недоступен" : "LM Studio недоступен";
+}
+
 export default function StatusPills({ status }: { status: SystemStatus | null }) {
   if (!status) return null;
   const llm = status.services?.lmstudio;
@@ -16,7 +23,7 @@ export default function StatusPills({ status }: { status: SystemStatus | null })
       : "GPU свободен";
   return (
     <div className="status-pills">
-      <span className={`dot ${llm ? "ok" : "bad"}`} title={llm ? "LM Studio" : "LM Studio недоступен"} />
+      <span className={`dot ${llm ? "ok" : "bad"}`} title={llmTitle(status, llm)} />
       <span className={`dot ${comfy ? "ok" : "bad"}`} title={comfy ? "ComfyUI" : "ComfyUI недоступен"} />
       <span className={`dot ${actives.length ? "busy" : "ok"}`} title={gpuTitle} />
     </div>
