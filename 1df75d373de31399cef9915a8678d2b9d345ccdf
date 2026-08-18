@@ -1,0 +1,26 @@
+mesh_forge/tools/mask_mesh.py
+  53650b40ee67df5a 303-314,449-455,473,511-516,597-604
+tests/test_mesh_edit.py
+  53650b40ee67df5a 1043,1052,1054-1097,1514,1537,1570,1572
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "git-ai-lite-1.0.0",
+  "base_commit_sha": "9b968c04270d741d5de8ffbad9a4c5cf4131d1ef",
+  "prompts": {
+    "53650b40ee67df5a": {
+      "agent_id": {
+        "tool": "cursor",
+        "id": "defd1b63-56c0-46e0-84a3-e7398388cd5e",
+        "model": "grok-4.6"
+      },
+      "human_author": "╨Ч╨╡╨╝╤Ж╨╛╨▓ ╨Р╨╗╨╡╨║╤Б╨╡╨╣ <zemtsov@moedelo.org>",
+      "messages": [],
+      "total_additions": 132,
+      "total_deletions": 231,
+      "accepted_lines": 84,
+      "accepted_deletions": 140,
+      "overridden_lines": 48
+    }
+  }
+}
