@@ -1,16 +1,26 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse
 
 from api.deps import get_runner, get_store
-from api.schemas import ChatDetail, ChatSummaryOut, CreateChatRequest, MessageOut, RenameChatRequest
+from api.schemas import (
+    ChatDetail,
+    ChatSummaryOut,
+    CreateChatRequest,
+    MessageOut,
+    MeshPickRequest,
+    RenameChatRequest,
+    ViewportAimRequest,
+)
 from mesh_forge.agent.runner import request_stop
 from mesh_forge.chat.models import Artifact
 
 router = APIRouter(prefix="/api/chats", tags=["chats"])
+logger = logging.getLogger("mesh_forge.api.chats")
 
 _IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp"}
 _MESH_EXT = {".stl", ".obj", ".glb", ".gltf"}
@@ -37,6 +47,9 @@ def _detail(chat_id: str) -> ChatDetail:
         created_at=meta.created_at,
         updated_at=meta.updated_at,
         current_mesh=meta.current_mesh,
+        mesh_region=meta.mesh_region,
+        mesh_pick=list(meta.mesh_pick or []),
+        mesh_topo=dict(meta.mesh_topo or {}),
         messages=[MessageOut.model_validate(m.model_dump()) for m in messages],
     )
 
@@ -80,6 +93,22 @@ def delete_chat(chat_id: str) -> None:
     get_store().delete(chat_id)
 
 
+@router.get("/{chat_id}/files/{name}/preview")
+def get_mesh_preview(chat_id: str, name: str):
+    store = get_store()
+    try:
+        path = store.resolve_file(chat_id, name)
+        if path.suffix.lower() not in _MESH_EXT:
+            raise FileNotFoundError("Not a mesh")
+        preview = store.ensure_mesh_preview(chat_id, path)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except Exception as exc:
+        logger.warning("mesh preview failed for %s/%s: %s", chat_id, name, exc)
+        raise HTTPException(404, "Preview unavailable") from exc
+    return FileResponse(preview, media_type="image/png", filename=preview.name)
+
+
 @router.get("/{chat_id}/files/{name}")
 def get_file(chat_id: str, name: str):
     try:
@@ -109,6 +138,45 @@ def stop_chat(chat_id: str) -> dict:
         raise HTTPException(404, str(exc)) from exc
     request_stop(chat_id)
     return {"ok": True}
+
+
+@router.put("/{chat_id}/mesh-pick")
+def set_mesh_pick(chat_id: str, body: MeshPickRequest) -> dict:
+    store = get_store()
+    try:
+        store.get_meta(chat_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    meta = store.set_mesh_pick(
+        chat_id, body.x, body.y, body.z, body.radius, kind=body.kind, mesh_ref=body.mesh or None, hops=body.hops
+    )
+    return {"region": meta.mesh_region, "pick": meta.mesh_pick, "topo": dict(meta.mesh_topo or {})}
+
+
+@router.delete("/{chat_id}/mesh-pick")
+def clear_mesh_pick(chat_id: str) -> dict:
+    store = get_store()
+    try:
+        meta = store.clear_mesh_pick(chat_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {"region": meta.mesh_region, "pick": meta.mesh_pick, "topo": dict(meta.mesh_topo or {})}
+
+
+@router.put("/{chat_id}/viewport-aim")
+def set_viewport_aim(chat_id: str, body: ViewportAimRequest) -> dict:
+    store = get_store()
+    try:
+        meta = store.set_viewport_aim(
+            chat_id,
+            body.x,
+            body.y,
+            views=body.views,
+            zoom=body.zoom,
+        )
+    except FileNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return {"look_view": dict(meta.look_view or {})}
 
 
 @router.post("/{chat_id}/messages")

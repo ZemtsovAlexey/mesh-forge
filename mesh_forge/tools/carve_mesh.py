@@ -10,17 +10,15 @@ from mesh_forge.tools.base import MeshTool
 from mesh_forge.tools.common import resolve_mesh, save_mesh_artifact
 
 _LOOK_AFTER = (
-    "look(target='mesh', views='front,left,right', "
-    "question='Срезан ли подлокотник, нога или сиденье? Один бок короче? "
-    "Ровный срез сбоку — брак. Если да — restore_mesh, не хвали.'). "
-    "Если look видит срез — сразу restore_mesh(to='previous'). "
-    "Не пиши «отлично»/«целы». Не generate_image."
+    "look(target='mesh'). Compare to the user request. "
+    "If a needed part is gone — restore_mesh(to='previous')."
 )
 
 
 class CarveMesh(MeshTool):
     title = "Вырез"
     heavy = True
+    expose = False
 
     def run(
         self,
@@ -36,13 +34,12 @@ class CarveMesh(MeshTool):
         back: float | None = None,
         front: float | None = None,
     ) -> str:
-        """Cut a LOCAL box of extra geometry. Never a full left/right slab — that chops the armrest.
+        """Cut a local box of extra geometry. Do not use a full left/right slab.
 
         Axes match look, 0–1 of bbox: X left→right, Y bottom→top, Z back→front.
-        Backrest wing: side='right' or 'left', amount 0.08–0.14, AND bottom=0.45, front=0.55.
-        Floor blob: side + top=0.35. Always set a second bound (bottom/top or back/front).
+        Always set a second bound (bottom/top or back/front), not only a side.
         action=remove deletes the box; action=keep crops to it.
-        After carve: look front+left+right. If an armrest/leg/seat is gone — restore_mesh. Do not praise.
+        After carve: look, then restore_mesh if the result is worse.
         """
         src = resolve_mesh(ctx, mesh_ref)
         try:
@@ -60,13 +57,12 @@ class CarveMesh(MeshTool):
         except CarveError as exc:
             return (
                 f"Carve skipped on {src.name}: {exc} "
-                "look(target='mesh', views='front,left,right') then retry with a tighter local box. "
-                "Не generate_image."
+                "look(target='mesh', views='front,left,right') then retry with a tighter local box."
             )
         except Exception as exc:
             return (
                 f"Carve failed on {src.name}: {exc}. "
-                "restore_mesh(to='previous' or 'source'). Не generate_image."
+                "restore_mesh(to='previous' or 'source')."
             )
         art = save_mesh_artifact(ctx, mesh, "carved.stl", label="carved")
         l, r, b, t, bk, f = box

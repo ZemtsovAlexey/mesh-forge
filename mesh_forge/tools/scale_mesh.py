@@ -22,7 +22,7 @@ class ScaleMesh(MeshTool):
         axis: Literal["x", "y", "z"] | None = None,
         axis_mm: float | None = None,
     ) -> str:
-        """Scale the current mesh. Prefer height_mm (longest axis) or uniform factor. Optional single-axis axis+axis_mm."""
+        """Resize the whole mesh. Pass height_mm, or factor, or axis+axis_mm. Not for shape fixes."""
         src = resolve_mesh(ctx, mesh_ref)
         mesh = load_mesh(src)
         if height_mm is not None and height_mm > 0:

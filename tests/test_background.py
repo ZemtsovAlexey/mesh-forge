@@ -124,5 +124,21 @@ class RemoveBackgroundToolTests(unittest.TestCase):
         self.assertIn(src.name, note)
 
 
+class FlattenCutoutTests(unittest.TestCase):
+    def test_flattens_alpha_onto_studio(self) -> None:
+        from mesh_forge.ops.background import cut_and_flatten
+
+        with tempfile.TemporaryDirectory() as raw:
+            src = Path(raw) / "src.png"
+            dest = Path(raw) / "flat.png"
+            img = Image.new("RGBA", (8, 8), (0, 0, 0, 0))
+            img.putpixel((3, 3), (255, 0, 0, 255))
+            img.save(src)
+            cut_and_flatten(src, dest, background=(10, 20, 30))
+            out = Image.open(dest).convert("RGB")
+            self.assertEqual(out.getpixel((3, 3)), (255, 0, 0))
+            self.assertEqual(out.getpixel((0, 0)), (10, 20, 30))
+
+
 if __name__ == "__main__":
     unittest.main()

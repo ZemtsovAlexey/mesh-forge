@@ -17,6 +17,10 @@ _FOLLOWUP = re.compile(
     r"ещё|еще|повтор\w*|redo|retry|переделай|заново|го|жди)[\s!.…]*$",
     re.IGNORECASE,
 )
+_REJECTION = re.compile(
+    r"^(нет+|неа|не надо|не нужно|не то|неправильно|мимо|no+|nope|wrong|not this)\b[\s!.…]*.*$",
+    re.IGNORECASE,
+)
 _MAX_TOOL_RETURN = 480
 _KEEP_FULL_RETURNS = 4
 _USER_MARK = "Latest user message: "
@@ -31,12 +35,20 @@ def is_followup(text: str) -> bool:
     return bool(_FOLLOWUP.match(value))
 
 
+def is_rejection(text: str) -> bool:
+    value = (text or "").strip()
+    if not value:
+        return False
+    return bool(_REJECTION.match(value))
+
+
 def workspace_instructions(ctx: RunContext[ChatDeps]) -> str:
     return build_workspace_brief(
         ctx.deps.store,
         ctx.deps.chat_id,
         ctx.deps.attachments,
         reply_artifacts=ctx.deps.reply_artifacts,
+        looks_without_edit=int(getattr(ctx.deps, "looks_without_edit", 0) or 0),
     )
 
 
@@ -104,11 +116,10 @@ def format_reply_prompt(artifacts: list[Artifact], reply_to: str) -> str:
         )
     if any(a.kind == "mesh" for a in artifacts):
         lines.append(
-            "If they comment on the mesh shape, look(target='mesh', views='orbit') "
-            "or look with zoom/region for a detail. "
-            "Extra wings/blobs/protrusions → carve_mesh, not generate_image. "
+            "If they comment on the mesh shape, look(target='mesh') "
+            "then the matching edit tool. "
             "If a recent edit made it worse, restore_mesh. "
-            "Do not generate_image unless they ask to redo the picture."
+            "generate_image if they want to redo the picture."
         )
     return "\n".join(lines)
 
@@ -118,6 +129,7 @@ def build_workspace_brief(
     chat_id: str,
     attachments: list[Artifact] | None = None,
     reply_artifacts: list[Artifact] | None = None,
+    looks_without_edit: int = 0,
 ) -> str:
     """Compact chat state for the local LLM — it often ignores long tool history."""
     lines = ["Current workspace (trust this; do not re-ask what to create if a goal or images exist):"]
@@ -139,11 +151,90 @@ def build_workspace_brief(
             lines.append(f"- Source mesh (Hunyuan/upload, restore_mesh to='source'): {source.name}{extra}")
         if previous and previous.name != mesh.name:
             lines.append(f"- Previous mesh (before last edit, restore_mesh to='previous'): {previous.name}")
+        hist = store.mesh_history(chat_id)
+        if len(hist) > 1:
+            lines.append(
+                f"- Undo stack: {len(hist)} older mesh(es). "
+                "restore_mesh(to='previous') walks back one each call."
+            )
+        region, pick = store.active_mesh_target(chat_id)
+        if pick and len(pick) >= 3:
+            nx, ny, nz = pick[0], pick[1], pick[2]
+            topo = store.active_mesh_topo(chat_id)
+            from mesh_forge.ops.topo import format_topo, topo_valid
+
+            extra = ""
+            if topo_valid(topo):
+                extra = (
+                    f" Topology: {format_topo(topo)} on mesh "
+                    f"{topo.get('mesh') or 'current'}. "
+                    "Paint with mask_mesh (omit x,y — uses this click). "
+                    "Show the red overlay and STOP. remove_mesh only after the user confirms."
+                )
+            lines.append(
+                f"- Current region: user click at "
+                f"normalized {nx:.2f},{ny:.2f},{nz:.2f}.{extra} "
+                "look(target='mesh') without region, then the edit tool without region."
+            )
+        elif region:
+            lines.append(
+                f"- Current region: {region}. "
+                "Omit region on look. For deletion paint mask_mesh then remove_mesh."
+            )
+        meta = store.get_meta(chat_id)
+        mask_info = dict(meta.mesh_mask or {})
+        mask_state = dict(meta.mask_state or {})
+        removal_state = dict(meta.removal_state or {})
+        if removal_state:
+            strategy = str(removal_state.get("strategy") or "")
+            status = str(removal_state.get("proposal_status") or "ready")
+            mesh_name = str(removal_state.get("mesh") or mesh.name)
+            lines.append(
+                f"- Removal proposal: strategy={strategy or 'unknown'} on {mesh_name} (proposal={status}). "
+                "This is the new universal delete workflow. Review the proposal preview with the user. "
+                "After confirmation call remove_extra(apply=True). "
+                "If the proposal looks wrong, you may rebuild with remove_extra(describe=...) or use mask_mesh only for a surface patch."
+            )
+            latest_user = _latest_user_text(messages)
+            if latest_user and is_rejection(latest_user):
+                lines.append(
+                    "- The latest user message rejects the current removal proposal. Do NOT call remove_extra(apply=True). "
+                    "Clear/rebuild the proposal instead."
+                )
+        painted = int(mask_info.get("count") or 0)
+        if painted > 0 and painted < 8:
+            lines.append(
+                f"- Painted mask: {painted} faces on "
+                f"{mask_info.get('mesh') or 'current'} — TOO SMALL, automatic proposal is not reliable. "
+                "Do NOT call remove_mesh. Ask the user to click the extra bit on a look PNG, then mask_mesh again."
+            )
+        elif painted > 8000:
+            lines.append(
+                f"- Painted mask: {painted} faces on "
+                f"{mask_info.get('mesh') or 'current'} — TOO LARGE, likely the skirt/body. "
+                "Do NOT call remove_mesh. Ask the user to click the petal on a look PNG, then mask_mesh again."
+            )
+        elif painted > 0:
+            status = str(mask_state.get("proposal_status") or "ready")
+            verdict = str(mask_state.get("review_verdict") or "")
+            verdict_txt = f" review={verdict}." if verdict else ""
+            lines.append(
+                f"- Painted mask: {painted} faces on "
+                f"{mask_info.get('mesh') or 'current'} (red overlay, proposal={status}).{verdict_txt} "
+                "mask_mesh already did multi-view detection, geometry checks, and strict auto-review. "
+                "Wait for user confirmation before remove_mesh. If the proposal is tiny, partial, or doubtful, ask for a click and rerun mask_mesh."
+            )
+        look = dict(meta.look_view or {})
+        if look.get("aim_x") is not None and look.get("aim_y") is not None:
+            lines.append(
+                f"- Viewport aim: {look.get('views') or 'view'} "
+                f"({float(look['aim_x']):.2f},{float(look['aim_y']):.2f}). "
+                "This click can be used as fallback if automatic masking is unsure."
+            )
         lines.append(
-            "- Mesh-edit mode: do NOT generate_image / generate_views / images_to_mesh "
-            "unless the user explicitly asks to redo the picture or rebuild the mesh. "
-            "Extra volumes/wings → carve_mesh after look. "
-            "If an edit ruined the shape, restore_mesh — do not repair the broken result and do not regen."
+            "- Mesh-edit mode: remove_extra is now the primary delete entrypoint. It chooses a strategy (protrusion_cut / island_drop / edge_trim / surface_patch), builds a proposal, and waits for confirmation before applying. "
+            "mask_mesh remains as a specialized surface-patch fallback and legacy workflow. "
+            "remove_extra(apply=True) is preferred after confirmation; remove_mesh is kept for already-painted red masks and backward compatibility."
         )
     else:
         lines.append("- Current mesh: none")
@@ -172,8 +263,8 @@ def build_workspace_brief(
         lines.append(f"- User reply target: {bits}")
         if mesh:
             lines.append(
-                "  Work on these ids. Mesh comments → look / inspect_mesh / carve_mesh / restore_mesh. "
-                "Do not images_to_mesh unless they ask to rebuild."
+                "  Work on these ids. Mesh comments → look / mask_mesh / remove_mesh / restore_mesh. "
+                "images_to_mesh if they ask to rebuild."
             )
         else:
             lines.append(
@@ -184,17 +275,17 @@ def build_workspace_brief(
     if mesh:
         lines.append(
             "Short follow-ups continue this mesh. "
-            "Do not generate_image / images_to_mesh unless the user asks to redo the picture. "
-            "If an edit made the shape worse, restore_mesh(to='previous' or 'source'). "
-            "Do not ask for a new object description."
+            "Delete a part → remove_extra, review the proposal with the user, then remove_extra(apply=True) if they confirm. "
+            "Use mask_mesh mainly for surface patches or legacy painted-mask flows. "
+            "If identity is lost, restore_mesh(to='previous' or 'source'). "
+            "generate_image / images_to_mesh only if they ask to start over."
         )
     else:
         lines.append(
             "Short follow-ups (продолжи / дальше / ok) continue this job. "
             "If look already returned NEXT: mesh, images_to_mesh with those ids. "
             "If NEXT: cutout, remove_background first. "
-            "If NEXT: regen, generate_image with a new seed (also for 3/4 or warped geometry). "
-            "Do not ask for a new object description."
+            "If NEXT: regen, generate_image with a new seed (also for 3/4 or warped geometry)."
         )
     return "\n".join(lines)
 
@@ -262,7 +353,7 @@ def _goal_from_messages(messages: list[UiMessage]) -> str:
         if message.role != "user":
             continue
         text = (message.content or "").strip()
-        if text and not is_followup(text):
+        if text and not is_followup(text) and not is_rejection(text):
             return text.splitlines()[0][:240]
     for message in reversed(messages):
         if message.role != "assistant":
@@ -271,6 +362,13 @@ def _goal_from_messages(messages: list[UiMessage]) -> str:
             prompt = tool.args.get("prompt") if isinstance(tool.args, dict) else None
             if isinstance(prompt, str) and prompt.strip():
                 return prompt.strip()[:240]
+    return ""
+
+
+def _latest_user_text(messages: list[UiMessage]) -> str:
+    for message in reversed(messages):
+        if message.role == "user":
+            return (message.content or "").strip()
     return ""
 
 

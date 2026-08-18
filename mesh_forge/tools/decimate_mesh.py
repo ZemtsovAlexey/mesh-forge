@@ -11,6 +11,7 @@ from mesh_forge.tools.common import resolve_mesh, save_mesh_artifact
 class DecimateMesh(MeshTool):
     title = "Упрощение"
     heavy = True
+    expose = False
 
     def run(
         self,

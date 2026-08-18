@@ -5,6 +5,11 @@ param(
     [ValidateSet("auto", "nvidia", "amd", "intel")]
     [string]$Gpu = "auto",
     [switch]$SkipCheckpoints,
+    [switch]$WithSegmentation,
+    [ValidateSet("groundingdino", "owlvit")]
+    [string]$SegmentationDetector = "groundingdino",
+    [switch]$SkipSegmentationNodes,
+    [switch]$SkipSegmentationSmoke,
     [switch]$QualityModels,
     [switch]$ForcePortable,
     [switch]$ForceReinstall,
@@ -14,6 +19,65 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 . (Join-Path $PSScriptRoot "comfyui-common.ps1")
+
+function Ensure-Git {
+    $git = Get-Command git -ErrorAction SilentlyContinue
+    if (-not $git) {
+        throw "git is required to install Comfy custom nodes. Install Git and retry."
+    }
+    return $git.Source
+}
+
+function Ensure-CustomNode {
+    param(
+        [string]$RepoUrl,
+        [string]$NodeName,
+        $Layout
+    )
+
+    $gitExe = Ensure-Git
+    $customNodes = Join-Path $Layout.ComfyRoot "custom_nodes"
+    New-Item -ItemType Directory -Force -Path $customNodes | Out-Null
+    $nodeDir = Join-Path $customNodes $NodeName
+    if (Test-Path $nodeDir) {
+        Write-Host "Updating custom node $NodeName..." -ForegroundColor Yellow
+        & $gitExe -C $nodeDir pull --ff-only
+    } else {
+        Write-Host "Installing custom node $NodeName..." -ForegroundColor Yellow
+        & $gitExe clone $RepoUrl $nodeDir
+    }
+    $req = Join-Path $nodeDir "requirements.txt"
+    if (Test-Path $req) {
+        Write-Host "  pip install -r requirements.txt ($NodeName)" -ForegroundColor Yellow
+        & $Layout.Python -m pip install -r $req
+    }
+    $installPy = Join-Path $nodeDir "install.py"
+    if (Test-Path $installPy) {
+        Write-Host "  running install.py ($NodeName)" -ForegroundColor Yellow
+        & $Layout.Python $installPy
+    }
+    return $nodeDir
+}
+
+function Test-Sam3Available {
+    param($Layout)
+    $builtin = Join-Path $Layout.ComfyRoot "comfy_extras\nodes_sam3.py"
+    if (Test-Path $builtin) { return $builtin }
+    foreach ($name in @("ComfyUI-SAM3", "ComfyUI-segment-anything-3")) {
+        $candidate = Join-Path $Layout.ComfyRoot "custom_nodes\$name"
+        if (Test-Path $candidate) { return $candidate }
+    }
+    return ""
+}
+
+function Test-GroundingAvailable {
+    param($Layout)
+    foreach ($name in @("ComfyUI-Grounding", "owl-vit-comfyui")) {
+        $candidate = Join-Path $Layout.ComfyRoot "custom_nodes\$name"
+        if (Test-Path $candidate) { return $candidate }
+    }
+    return ""
+}
 
 $layout = Find-ComfyLayout -ProjectRoot $root -InstallDir $InstallDir
 $legacyDir = "C:\AI\ComfyUI"
@@ -161,6 +225,34 @@ if (Test-Path $projectWf) {
     }
 }
 
+if ($WithSegmentation) {
+    Write-Host "Ensuring Comfy segmentation nodes..." -ForegroundColor Yellow
+    if (-not $SkipSegmentationNodes) {
+        $groundingRepo = "https://github.com/PozzettiAndrea/ComfyUI-Grounding.git"
+        Ensure-CustomNode -RepoUrl $groundingRepo -NodeName "ComfyUI-Grounding" -Layout $layout | Out-Null
+        if (-not (Test-Sam3Available -Layout $layout)) {
+            $sam3Repo = "https://github.com/PozzettiAndrea/ComfyUI-SAM3.git"
+            Ensure-CustomNode -RepoUrl $sam3Repo -NodeName "ComfyUI-SAM3" -Layout $layout | Out-Null
+        }
+    }
+    if (-not $SkipSegmentationSmoke) {
+        $grounding = Test-GroundingAvailable -Layout $layout
+        if ($grounding) {
+            Write-Host "  detector nodes: OK ($grounding)" -ForegroundColor Green
+        } else {
+            Write-Warning "Detector node was not found after setup. Expected ComfyUI-Grounding or owl-vit-comfyui."
+        }
+        $sam3 = Test-Sam3Available -Layout $layout
+        if ($sam3) {
+            Write-Host "  SAM3 nodes: OK ($sam3)" -ForegroundColor Green
+        } else {
+            Write-Warning "SAM3 node was not found after setup."
+        }
+        Write-Host "  detector backend: $SegmentationDetector" -ForegroundColor Cyan
+        Write-Host "  note: detector/model weights are usually downloaded on first Comfy run." -ForegroundColor Cyan
+    }
+}
+
 if (-not $SkipCheckpoints) {
     Write-Host "Ensuring ComfyUI checkpoints in $($layout.CkptDir) ..." -ForegroundColor Yellow
     $checkpoints = @(
@@ -221,5 +313,9 @@ Write-Host ""
 Write-Host "comfyui.install_dir:" -ForegroundColor Cyan
 Write-Host "  $($layout.InstallDir -replace '\\','/')"
 Write-Host "Kind: $($layout.Kind)"
+if ($WithSegmentation) {
+    Write-Host "Segmentation: detector=$SegmentationDetector via Comfy custom nodes" -ForegroundColor Cyan
+    Write-Host "If ComfyUI was already running, restart it to load newly installed nodes." -ForegroundColor Cyan
+}
 Write-Host "Start with: .\scripts\start-comfyui.ps1"
 Write-Host "ComfyUI setup complete." -ForegroundColor Green

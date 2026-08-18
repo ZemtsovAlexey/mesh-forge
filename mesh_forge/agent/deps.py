@@ -20,6 +20,13 @@ class ChatDeps:
     reply_artifacts: list[Artifact] = field(default_factory=list)
     emit: EmitFn = field(default=lambda _event: None)
     loop: asyncio.AbstractEventLoop | None = None
+    looks_without_edit: int = 0
+
+    def note_tool(self, name: str) -> None:
+        if name == "look":
+            self.looks_without_edit += 1
+        else:
+            self.looks_without_edit = 0
 
     def emit_event(self, event_type: str, **payload: Any) -> None:
         data = {"type": event_type, **payload}

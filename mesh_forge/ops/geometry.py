@@ -412,6 +412,7 @@ def carve_region(
     min_keep_ratio: float = 0.12,
     min_keep_faces: int = 200,
     drop_crumbs: bool = True,
+    protect_sides: bool = True,
 ) -> tuple[trimesh.Trimesh, dict[str, Any]]:
     """Keep or delete faces whose centroids fall in a normalized AABB.
 
@@ -446,16 +447,15 @@ def carve_region(
     cx, cy, cz = carve_constrained_axes(box)
     if action == "remove" and sum((cx, cy, cz)) < 2:
         raise CarveError(
-            "A full-side slab also cuts the armrest and legs. "
-            "For a backrest wing: side=right|left, amount=0.08–0.14, bottom=0.45, front=0.55. "
-            "Always set a second bound (bottom/top or back/front)."
+            "A full-side slab is too wide. "
+            "Always set a second bound (bottom/top or back/front) and a smaller amount."
         )
     before_left, before_right = _side_band_area(mesh)
     mesh.update_faces(keep_mask)
     mesh.remove_unreferenced_vertices()
     if drop_crumbs:
         mesh = _drop_tiny_components(mesh)
-    if action == "remove" and cx:
+    if protect_sides and action == "remove" and cx:
         _assert_carve_keeps_sides(mesh, before_left, before_right)
     logger.info(
         "carve_region: action=%s dropped %d/%d faces box=(L%.2f R%.2f B%.2f T%.2f Bk%.2f F%.2f)",
@@ -475,6 +475,47 @@ def carve_region(
         "faces_after": int(len(mesh.faces)),
         "faces_dropped": dropped,
         "box": box,
+    }
+
+
+def carve_faces(
+    mesh: trimesh.Trimesh,
+    drop_mask: np.ndarray,
+    *,
+    min_keep_ratio: float = 0.50,
+    min_keep_faces: int = 200,
+    drop_crumbs: bool = True,
+) -> tuple[trimesh.Trimesh, dict[str, Any]]:
+    """Delete faces in ``drop_mask``. Used for click patches, not semantic slabs."""
+    mesh = mesh.copy()
+    n_faces = int(len(mesh.faces))
+    if n_faces == 0:
+        raise CarveError("Mesh has no faces to carve.")
+    drop = np.asarray(drop_mask, dtype=bool)
+    if drop.shape != (n_faces,):
+        raise CarveError("Face mask does not match the mesh.")
+    dropped = int(drop.sum())
+    if dropped <= 0:
+        raise CarveError("Nothing at that click. Click the extra bit itself.")
+    keep = ~drop
+    kept = int(keep.sum())
+    if kept < max(min_keep_faces, int(min_keep_ratio * n_faces)):
+        raise CarveError(
+            f"Click would delete {dropped}/{n_faces} faces — too much. "
+            "Click closer to the extra bit, then restore_mesh if this already ran."
+        )
+    mesh.update_faces(keep)
+    mesh.remove_unreferenced_vertices()
+    if drop_crumbs:
+        mesh = _drop_tiny_components(mesh)
+    extra = int(n_faces - dropped - len(mesh.faces))
+    logger.info("carve_faces: dropped %d/%d faces (extra_components=%d)", dropped, n_faces, extra)
+    return mesh, {
+        "action": "remove",
+        "faces_before": n_faces,
+        "faces_after": int(len(mesh.faces)),
+        "faces_dropped": dropped,
+        "faces_extra": max(0, extra),
     }
 
 
@@ -500,15 +541,15 @@ def _assert_carve_keeps_sides(
     before_left: float,
     before_right: float,
 ) -> None:
-    """Refuse a left/right cut that deleted an armrest while leaving the other."""
+    """Refuse a left/right cut that deleted one side while leaving the other."""
     left, right = _side_band_area(mesh)
     before_ratio = min(before_left, before_right) / max(before_left, before_right, 1e-9)
     after_ratio = min(left, right) / max(left, right, 1e-9)
     if after_ratio >= 0.62 or after_ratio >= before_ratio - 0.08:
         return
     raise CarveError(
-        "Cut chopped a structural side (armrest/leg/seat). "
-        "Tighten the box: for a backrest wing use bottom~0.45 and front~0.55, amount 0.08-0.14."
+        "Cut chopped a structural side. "
+        "Tighten the box with a second bound (bottom/top or back/front) and a smaller amount."
     )
 
 

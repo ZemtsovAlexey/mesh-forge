@@ -2,6 +2,12 @@ param(
     [switch]$SkipComfyUI,
     [switch]$SkipCheckpoints,
     [switch]$StartComfyUI,
+    [switch]$WithSegmentation,
+    [ValidateSet("groundingdino", "owlvit")]
+    [string]$SegmentationDetector = "groundingdino",
+    [string]$SegmentationModel = "",
+    [switch]$SkipSegmentationNodes,
+    [switch]$SkipSegmentationSmoke,
     [ValidateSet("auto", "nvidia", "amd", "intel")]
     [string]$Gpu = "auto"
 )
@@ -38,7 +44,10 @@ function Update-LocalConfig {
         [string]$UvExe,
         [string]$ProjectRoot,
         [string]$ComfyRoot,
-        [int]$GpuVramGb
+        [int]$GpuVramGb,
+        [bool]$SegmentationEnabled,
+        [string]$SegmentationDetector,
+        [string]$SegmentationModel
     )
 
     $tmp = Join-Path $env:TEMP ("meshforge_config_update_" + [guid]::NewGuid().ToString("n") + ".py")
@@ -80,6 +89,34 @@ if not comfy.get("install_dir") and os.environ.get("MF_COMFY_ROOT"):
     comfy["install_dir"] = Path(os.environ["MF_COMFY_ROOT"]).as_posix()
 data["comfyui"] = comfy
 
+seg = dict(data.get("segmentation") or {})
+seg["enabled"] = os.environ.get("MF_SEGMENTATION_ENABLED", "0").strip().lower() in {"1", "true", "yes", "on"}
+detector = str(os.environ.get("MF_SEGMENTATION_DETECTOR") or "groundingdino").strip().lower()
+seg["provider"] = str(seg.get("provider") or "comfyui")
+seg["detector"] = detector
+seg["detector_backend"] = str(seg.get("detector_backend") or ("owlvit" if detector == "owlvit" else "grounding"))
+if not seg.get("detector_model"):
+    default_model = "google/owlv2-base-patch16-ensemble" if detector == "owlvit" else "IDEA-Research/grounding-dino-tiny"
+    seg["detector_model"] = str(os.environ.get("MF_SEGMENTATION_MODEL") or default_model)
+seg["detector_node_repo"] = str(seg.get("detector_node_repo") or "https://github.com/PozzettiAndrea/ComfyUI-Grounding.git")
+seg["detector_device"] = str(seg.get("detector_device") or "cuda")
+seg["detector_dtype"] = str(seg.get("detector_dtype") or "float16")
+seg["segmenter"] = str(seg.get("segmenter") or "sam3")
+seg["segmenter_backend"] = str(seg.get("segmenter_backend") or "sam3")
+if not seg.get("segmenter_base_url"):
+    seg["segmenter_base_url"] = comfy["base_url"]
+seg["workflow_detect"] = str(seg.get("workflow_detect") or "")
+seg["workflow_segment"] = str(seg.get("workflow_segment") or "")
+seg["render_size"] = int(seg.get("render_size") or 768)
+seg["max_views"] = int(seg.get("max_views") or 4)
+seg["sequential"] = bool(seg.get("sequential", True))
+seg["min_box_score"] = float(seg.get("min_box_score") or 0.12)
+seg["mask_threshold"] = float(seg.get("mask_threshold") or 0.5)
+seg["projection_min_views"] = int(seg.get("projection_min_views") or 2)
+seg["debug_emit_every_step"] = bool(seg.get("debug_emit_every_step", True))
+seg["free_gpu_between_steps"] = bool(seg.get("free_gpu_between_steps", True))
+data["segmentation"] = seg
+
 cfg_path.write_text(yaml.safe_dump(data, allow_unicode=True, sort_keys=False, default_flow_style=False), encoding="utf-8")
 print(cfg_path)
 "@ | Set-Content -Path $tmp -Encoding utf8
@@ -88,11 +125,14 @@ print(cfg_path)
     $env:MF_PROJECTS = (Join-Path $ProjectRoot "projects")
     $env:MF_COMFY_ROOT = $ComfyRoot
     $env:MF_GPU_VRAM_GB = "$GpuVramGb"
+    $env:MF_SEGMENTATION_ENABLED = if ($SegmentationEnabled) { "1" } else { "0" }
+    $env:MF_SEGMENTATION_DETECTOR = $SegmentationDetector
+    $env:MF_SEGMENTATION_MODEL = $SegmentationModel
     try {
         & $UvExe run python $tmp
     } finally {
         Remove-Item $tmp -Force -ErrorAction SilentlyContinue
-        Remove-Item Env:MF_ROOT, Env:MF_PROJECTS, Env:MF_COMFY_ROOT, Env:MF_GPU_VRAM_GB -ErrorAction SilentlyContinue
+        Remove-Item Env:MF_ROOT, Env:MF_PROJECTS, Env:MF_COMFY_ROOT, Env:MF_GPU_VRAM_GB, Env:MF_SEGMENTATION_ENABLED, Env:MF_SEGMENTATION_DETECTOR, Env:MF_SEGMENTATION_MODEL -ErrorAction SilentlyContinue
     }
 }
 
@@ -113,14 +153,28 @@ if (-not (Test-Path $configPath) -and (Test-Path $configExample)) {
 
 if (-not $SkipComfyUI) {
     Write-Host "Setting up ComfyUI..." -ForegroundColor Yellow
-    & (Join-Path $PSScriptRoot "setup-comfyui.ps1") -Gpu $Gpu -SkipCheckpoints:$SkipCheckpoints
+    & (Join-Path $PSScriptRoot "setup-comfyui.ps1") `
+        -Gpu $Gpu `
+        -SkipCheckpoints:$SkipCheckpoints `
+        -WithSegmentation:$WithSegmentation `
+        -SegmentationDetector $SegmentationDetector `
+        -SkipSegmentationNodes:$SkipSegmentationNodes `
+        -SkipSegmentationSmoke:$SkipSegmentationSmoke
 }
 
 $layout = Find-ComfyLayout -ProjectRoot $root
 $resolvedComfy = if (Test-ComfyLayoutReady $layout) { $layout.InstallDir } else { "" }
+
 $gpuVram = Get-GpuMemoryHintGb
 Write-Host "Refreshing local config..." -ForegroundColor Yellow
-Update-LocalConfig -UvExe $uvExe -ProjectRoot $root -ComfyRoot $resolvedComfy -GpuVramGb $gpuVram
+Update-LocalConfig `
+    -UvExe $uvExe `
+    -ProjectRoot $root `
+    -ComfyRoot $resolvedComfy `
+    -GpuVramGb $gpuVram `
+    -SegmentationEnabled:$WithSegmentation `
+    -SegmentationDetector $SegmentationDetector `
+    -SegmentationModel $SegmentationModel
 
 Write-Host ""
 Write-Host "Manual services to verify:" -ForegroundColor Cyan
@@ -131,6 +185,8 @@ Write-Host ""
 Write-Host "Useful scripts:" -ForegroundColor Cyan
 Write-Host "  .\scripts\start-comfyui.ps1"
 Write-Host "  .\scripts\stop-comfyui.ps1"
+Write-Host "  .\scripts\setup-segmentation.ps1"
+Write-Host "  .\scripts\check-segmentation.ps1"
 Write-Host "  .\scripts\run.ps1"
 Write-Host ""
 

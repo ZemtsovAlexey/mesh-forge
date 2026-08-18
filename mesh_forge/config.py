@@ -169,6 +169,32 @@ class ComfyUIConfig:
 
 
 @dataclass
+class SegmentationConfig:
+    enabled: bool = False
+    provider: str = "comfyui"
+    detector: str = "groundingdino"
+    detector_backend: str = "grounding"
+    detector_model: str = "IDEA-Research/grounding-dino-tiny"
+    detector_node_repo: str = "https://github.com/PozzettiAndrea/ComfyUI-Grounding.git"
+    detector_device: str = "cuda"
+    detector_dtype: str = "float16"
+    segmenter: str = "sam3"
+    segmenter_backend: str = "sam3"
+    # Empty = reuse comfyui.base_url.
+    segmenter_base_url: str = ""
+    workflow_detect: str = ""
+    workflow_segment: str = ""
+    render_size: int = 768
+    max_views: int = 4
+    sequential: bool = True
+    min_box_score: float = 0.12
+    mask_threshold: float = 0.5
+    projection_min_views: int = 2
+    debug_emit_every_step: bool = True
+    free_gpu_between_steps: bool = True
+
+
+@dataclass
 class PhotoConfig:
     # Scale reconstructed nets to this longest-axis size (mm)
     target_height_mm: float = 160.0
@@ -190,6 +216,7 @@ class AppConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     gpu: GPUConfig = field(default_factory=GPUConfig)
     comfyui: ComfyUIConfig = field(default_factory=ComfyUIConfig)
+    segmentation: SegmentationConfig = field(default_factory=SegmentationConfig)
     photo: PhotoConfig = field(default_factory=PhotoConfig)
     config_path: Path = field(default_factory=_find_config)
 
@@ -257,6 +284,9 @@ def load_config(path: Path | None = None) -> AppConfig:
     gpu_raw = {k: v for k, v in gpu_raw.items() if k in known_gpu}
     if str(gpu_raw.get("shared_gpu") or "").strip().lower() == "auto":
         gpu_raw["shared_gpu"] = None
+    segmentation_raw = dict(data.get("segmentation") or {})
+    known_segmentation = set(SegmentationConfig.__dataclass_fields__)
+    segmentation_raw = {k: v for k, v in segmentation_raw.items() if k in known_segmentation}
 
     llm_raw = dict(data.get("llm") or {})
     known_llm = set(LLMConfig.__dataclass_fields__)
@@ -271,6 +301,7 @@ def load_config(path: Path | None = None) -> AppConfig:
         server=ServerConfig(**(data.get("server") or {})),
         gpu=GPUConfig(**gpu_raw),
         comfyui=ComfyUIConfig(**comfy_raw),
+        segmentation=SegmentationConfig(**segmentation_raw),
         photo=PhotoConfig(**photo_raw),
         config_path=cfg_path,
     )
@@ -357,6 +388,29 @@ def save_config(config: AppConfig) -> Path:
         "mesh_octree_resolution": config.comfyui.mesh_octree_resolution,
         "mesh_num_chunks": config.comfyui.mesh_num_chunks,
     }
+    data["segmentation"] = {
+        "enabled": bool(config.segmentation.enabled),
+        "provider": config.segmentation.provider,
+        "detector": config.segmentation.detector,
+        "detector_backend": config.segmentation.detector_backend,
+        "detector_model": config.segmentation.detector_model,
+        "detector_node_repo": config.segmentation.detector_node_repo,
+        "detector_device": config.segmentation.detector_device,
+        "detector_dtype": config.segmentation.detector_dtype,
+        "segmenter": config.segmentation.segmenter,
+        "segmenter_backend": config.segmentation.segmenter_backend,
+        "segmenter_base_url": config.segmentation.segmenter_base_url,
+        "workflow_detect": config.segmentation.workflow_detect,
+        "workflow_segment": config.segmentation.workflow_segment,
+        "render_size": config.segmentation.render_size,
+        "max_views": config.segmentation.max_views,
+        "sequential": bool(config.segmentation.sequential),
+        "min_box_score": config.segmentation.min_box_score,
+        "mask_threshold": config.segmentation.mask_threshold,
+        "projection_min_views": config.segmentation.projection_min_views,
+        "debug_emit_every_step": bool(config.segmentation.debug_emit_every_step),
+        "free_gpu_between_steps": bool(config.segmentation.free_gpu_between_steps),
+    }
     data["photo"] = {
         "target_height_mm": config.photo.target_height_mm,
         "mesh_postprocess": bool(config.photo.mesh_postprocess),
@@ -380,6 +434,12 @@ def normalize_comfyui_base_url(url: str | None) -> str:
     if "://" not in text:
         text = f"http://{text}"
     return text
+
+
+def segmentation_segmenter_base_url(config: AppConfig | None = None) -> str:
+    cfg = config or load_config()
+    base = (cfg.segmentation.segmenter_base_url or cfg.comfyui.base_url).strip()
+    return normalize_comfyui_base_url(base)
 
 
 def comfyui_is_local(config: AppConfig | None = None) -> bool:

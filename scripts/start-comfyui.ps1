@@ -52,7 +52,17 @@ if ($layout.Kind -eq "desktop") {
 $outLog = Join-Path $stateDir "comfyui.out.log"
 $errLog = Join-Path $stateDir "comfyui.err.log"
 
-$args = @("-s", ".\main.py", "--listen", $ListenHost, "--port", "$Port", "--disable-auto-launch")
+# disable-smart-memory: keep models off GPU after /free so LM Studio can load.
+# SAM3 nodes can false-positive as "pytest mode" without this env toggle.
+$prevSam3ForceInit = $env:SAM3_FORCE_INIT
+$env:SAM3_FORCE_INIT = "1"
+$args = @(
+    "-s", ".\main.py",
+    "--listen", $ListenHost,
+    "--port", "$Port",
+    "--disable-auto-launch",
+    "--disable-smart-memory"
+)
 if ($layout.Kind -eq "portable") {
     $args += "--windows-standalone-build"
 }
@@ -68,14 +78,22 @@ if ($layout.Kind -eq "desktop") {
     }
 }
 
-$proc = Start-Process `
-    -FilePath $layout.Python `
-    -ArgumentList $args `
-    -WorkingDirectory $layout.ComfyRoot `
-    -RedirectStandardOutput $outLog `
-    -RedirectStandardError $errLog `
-    -PassThru `
-    -WindowStyle Hidden
+try {
+    $proc = Start-Process `
+        -FilePath $layout.Python `
+        -ArgumentList $args `
+        -WorkingDirectory $layout.ComfyRoot `
+        -RedirectStandardOutput $outLog `
+        -RedirectStandardError $errLog `
+        -PassThru `
+        -WindowStyle Hidden
+} finally {
+    if ($null -eq $prevSam3ForceInit) {
+        Remove-Item Env:SAM3_FORCE_INIT -ErrorAction SilentlyContinue
+    } else {
+        $env:SAM3_FORCE_INIT = $prevSam3ForceInit
+    }
+}
 
 Set-Content -Path $pidFile -Value $proc.Id -Encoding ascii
 Write-Host "ComfyUI pid=$($proc.Id), logs=$outLog / $errLog"

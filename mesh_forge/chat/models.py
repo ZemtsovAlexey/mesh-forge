@@ -24,11 +24,12 @@ class ToolCallRecord(BaseModel):
     summary: str = ""
     progress: float = 0
     stage: str = ""
+    thinking: str = ""
     artifacts: list[Artifact] = Field(default_factory=list)
 
 
 class MessageBlock(BaseModel):
-    kind: Literal["text", "tool"] = "text"
+    kind: Literal["text", "tool", "thinking"] = "text"
     text: str = ""
     tool_id: str = ""
 
@@ -44,6 +45,9 @@ class UiMessage(BaseModel):
     blocks: list[MessageBlock] = Field(default_factory=list)
     reply_to: str = ""
     reply_artifact_ids: list[str] = Field(default_factory=list)
+    mesh_region: str = ""
+    mesh_pick: list[float] = Field(default_factory=list)
+    mesh_topo: dict[str, Any] = Field(default_factory=dict)
 
 
 class ChatMeta(BaseModel):
@@ -54,6 +58,14 @@ class ChatMeta(BaseModel):
     current_mesh: str = ""
     source_mesh: str = ""
     previous_mesh: str = ""
+    mesh_region: str = ""
+    mesh_pick: list[float] = Field(default_factory=list)
+    mesh_topo: dict[str, Any] = Field(default_factory=dict)
+    look_view: dict[str, Any] = Field(default_factory=dict)
+    mesh_mask: dict[str, Any] = Field(default_factory=dict)
+    mask_state: dict[str, Any] = Field(default_factory=dict)
+    removal_state: dict[str, Any] = Field(default_factory=dict)
+    mesh_history: list[str] = Field(default_factory=list)
     title_locked: bool = False
 
 

@@ -5,7 +5,27 @@ import Settings from "./components/Settings";
 import Sidebar from "./components/Sidebar";
 import StatusPills from "./components/StatusPills";
 import Transcript from "./components/Transcript";
-import type { Artifact, ChatDetail, ChatMessage, ChatSummary, ReplyTarget, SystemStatus, ToolCall } from "./types";
+import type { Artifact, ChatDetail, ChatMessage, ChatSummary, LLMSettings, MeshTopo, ReplyTarget, SystemStatus, ToolCall } from "./types";
+
+const REGION_RU: Record<string, string> = {
+  legs: "ножки",
+  seat: "сиденье",
+  back: "спинка",
+  left: "слева",
+  right: "справа",
+  top: "верх",
+  bottom: "низ",
+  front: "спереди",
+};
+
+function topoChip(topo: MeshTopo): string {
+  const kind = topo.kind === "vertex" ? "вершина" : topo.kind === "edge" ? "ребро" : "грань";
+  if (topo.kind === "edge" && topo.edge && topo.edge.length >= 2) {
+    return `${kind} ${topo.edge[0]}–${topo.edge[1]}`;
+  }
+  if (topo.kind === "vertex") return `${kind} ${topo.vertex}`;
+  return `${kind} ${topo.face}`;
+}
 
 export default function App() {
   const [chats, setChats] = useState<ChatSummary[]>([]);
@@ -14,12 +34,14 @@ export default function App() {
   const [streamingById, setStreamingById] = useState<Record<string, boolean>>({});
   const [status, setStatus] = useState<SystemStatus | null>(null);
   const [settings, setSettings] = useState(false);
+  const [llm, setLlm] = useState<LLMSettings | null>(null);
   const [reply, setReply] = useState<ReplyTarget | null>(null);
   const [titleEdit, setTitleEdit] = useState(false);
   const [titleDraft, setTitleDraft] = useState("");
   const titleInputRef = useRef<HTMLInputElement>(null);
   const titleEditRef = useRef(false);
 
+  const abortById = useRef<Record<string, AbortController>>({});
   const detailsRef = useRef(details);
   detailsRef.current = details;
   const streamingRef = useRef(streamingById);
@@ -57,6 +79,10 @@ export default function App() {
       })
       .catch(() => undefined);
   }, [refreshChats, remember]);
+
+  useEffect(() => {
+    api.getLlm().then(setLlm).catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     const tick = () => api.status().then(setStatus).catch(() => undefined);
@@ -134,7 +160,8 @@ export default function App() {
 
   const stop = async () => {
     if (!activeId) return;
-    await api.stopChat(activeId);
+    abortById.current[activeId]?.abort();
+    await api.stopChat(activeId).catch(() => undefined);
   };
 
   const send = async (text: string, files: File[]) => {
@@ -148,8 +175,14 @@ export default function App() {
       await refreshChats();
     }
     const chatId = chat.id;
+    abortById.current[chatId]?.abort();
+    await api.stopChat(chatId).catch(() => undefined);
+    const ac = new AbortController();
+    abortById.current[chatId] = ac;
     setStreamingById((cur) => ({ ...cur, [chatId]: true }));
     let assistantId = `tmp-${Date.now()}`;
+    const pendingPick = Array.isArray(chat.mesh_pick) ? chat.mesh_pick : [];
+    const pendingRegion = chat.mesh_region || "";
     const user: ChatMessage = {
       id: `u-${Date.now()}`,
       role: "user",
@@ -160,6 +193,9 @@ export default function App() {
       artifacts: [],
       reply_to: citing?.messageId || "",
       reply_artifact_ids: citing?.artifactIds || [],
+      mesh_region: pendingRegion,
+      mesh_pick: pendingPick,
+      mesh_topo: chat.mesh_topo || {},
     };
     const assistant: ChatMessage = {
       id: assistantId,
@@ -173,6 +209,9 @@ export default function App() {
     };
     patchChat(chatId, (cur) => ({
       ...cur,
+      mesh_region: "",
+      mesh_pick: [],
+      mesh_topo: {},
       messages: [...(Array.isArray(cur.messages) ? cur.messages : []), user, assistant],
     }));
     try {
@@ -190,12 +229,20 @@ export default function App() {
             return { ...cur, [chatId]: applyEvent(prev, assistantId, event, data) };
           });
         },
-        undefined,
+        ac.signal,
         citing ? { messageId: citing.messageId, artifactIds: citing.artifactIds } : null,
       );
       await refreshChats();
       remember(await api.getChat(chatId));
     } catch (err) {
+      if (ac.signal.aborted || (err instanceof DOMException && err.name === "AbortError")) {
+        try {
+          remember(await api.getChat(chatId));
+        } catch {
+          /* still unlocking composer */
+        }
+        return;
+      }
       patchChat(chatId, (cur) => ({
         ...cur,
         messages: (Array.isArray(cur.messages) ? cur.messages : []).map((m) =>
@@ -203,6 +250,9 @@ export default function App() {
         ),
       }));
     } finally {
+      if (abortById.current[chatId] === ac) {
+        delete abortById.current[chatId];
+      }
       setStreamingById((cur) => {
         const next = { ...cur };
         delete next[chatId];
@@ -305,14 +355,110 @@ export default function App() {
           messages={Array.isArray(active?.messages) ? active.messages : []}
           streaming={streaming}
           onReply={setReply}
+          pick={
+            active?.mesh_pick && active.mesh_pick.length >= 3
+              ? {
+                  x: active.mesh_pick[0],
+                  y: active.mesh_pick[1],
+                  z: active.mesh_pick[2],
+                  kind: (active.mesh_topo?.kind as "vertex" | "edge" | "face") || "face",
+                  mesh: active.mesh_topo?.mesh,
+                }
+              : null
+          }
+          onPick={
+            activeId
+              ? async (p) => {
+                  try {
+                    const out = await api.setMeshPick(activeId, p);
+                    patchChat(activeId, (chat) => ({
+                      ...chat,
+                      mesh_region: out.region,
+                      mesh_pick: out.pick,
+                      mesh_topo: out.topo || {},
+                      look_view: undefined,
+                    }));
+                  } catch (err) {
+                    window.alert(err instanceof Error ? err.message : String(err));
+                  }
+                }
+              : undefined
+          }
+          onViewportAim={
+            activeId
+              ? async (aim) => {
+                  try {
+                    const out = await api.setViewportAim(activeId, {
+                      x: aim.x,
+                      y: aim.y,
+                      views: aim.views,
+                      zoom: 1.5,
+                    });
+                    patchChat(activeId, (chat) => ({
+                      ...chat,
+                      look_view: out.look_view as ChatDetail["look_view"],
+                      mesh_region: "",
+                      mesh_pick: [],
+                      mesh_topo: {},
+                    }));
+                  } catch (err) {
+                    window.alert(err instanceof Error ? err.message : String(err));
+                  }
+                }
+              : undefined
+          }
         />
         <Composer
           disabled={false}
           streaming={streaming}
           reply={reply}
           onClearReply={() => setReply(null)}
+          regionLabel={
+            active?.look_view?.aim_x != null && active?.look_view?.aim_y != null
+              ? `кадр · ${active.look_view.views || "view"} (${Number(active.look_view.aim_x).toFixed(2)}, ${Number(active.look_view.aim_y).toFixed(2)})`
+              : active?.mesh_topo && (active.mesh_topo.face >= 0 || active.mesh_topo.vertex >= 0)
+              ? topoChip(active.mesh_topo)
+              : active?.mesh_pick?.length
+              ? `клик · ${REGION_RU[active.mesh_region || ""] || active.mesh_region || "точка"}`
+              : active?.mesh_region
+                ? REGION_RU[active.mesh_region] || active.mesh_region
+                : ""
+          }
+          onClearRegion={
+            activeId
+              ? async () => {
+                  try {
+                    await api.clearMeshPick(activeId);
+                    patchChat(activeId, (chat) => ({
+                      ...chat,
+                      mesh_region: "",
+                      mesh_pick: [],
+                      mesh_topo: {},
+                      look_view: chat.look_view
+                        ? { ...chat.look_view, aim_x: undefined, aim_y: undefined }
+                        : undefined,
+                    }));
+                  } catch (err) {
+                    window.alert(err instanceof Error ? err.message : String(err));
+                  }
+                }
+              : undefined
+          }
           onSend={send}
           onStop={stop}
+          effort={llm?.reasoning_effort || "medium"}
+          onEffort={async (next) => {
+            const current = llm || (await api.getLlm().catch(() => null));
+            if (!current) return;
+            const body = { ...current, reasoning_effort: next };
+            setLlm(body);
+            try {
+              await api.saveLlm(body);
+            } catch (err) {
+              setLlm(current);
+              window.alert(err instanceof Error ? err.message : String(err));
+            }
+          }}
         />
       </main>
       {settings ? (
@@ -320,6 +466,7 @@ export default function App() {
           onClose={() => {
             setSettings(false);
             api.status().then(setStatus).catch(() => undefined);
+            api.getLlm().then(setLlm).catch(() => undefined);
           }}
         />
       ) : null}
@@ -370,7 +517,27 @@ function applyEvent(
   };
 
   if (event === "user" && data.message) {
-    /* already inserted locally */
+    const incoming = data.message as Partial<ChatMessage>;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].role === "user") {
+        messages[i] = {
+          ...messages[i],
+          id: String(incoming.id || messages[i].id),
+          content: String(incoming.content ?? messages[i].content),
+          mesh_region: String(incoming.mesh_region || messages[i].mesh_region || ""),
+          mesh_pick: Array.isArray(incoming.mesh_pick)
+            ? incoming.mesh_pick.map(Number).filter((n) => Number.isFinite(n))
+            : messages[i].mesh_pick || [],
+          mesh_topo: incoming.mesh_topo || messages[i].mesh_topo || {},
+          reply_to: String(incoming.reply_to || messages[i].reply_to || ""),
+          reply_artifact_ids: Array.isArray(incoming.reply_artifact_ids)
+            ? incoming.reply_artifact_ids.map(String)
+            : messages[i].reply_artifact_ids || [],
+        };
+        break;
+      }
+    }
+    return { ...cur, messages, mesh_region: "", mesh_pick: [], mesh_topo: {} };
   } else if (event === "assistant_start" && data.id) {
     msg.id = String(data.id);
   } else if (event === "text_delta") {
@@ -381,6 +548,14 @@ function applyEvent(
       msg.blocks[msg.blocks.length - 1] = { ...last, text: (last.text || "") + delta };
     } else if (delta) {
       msg.blocks = [...msg.blocks, { kind: "text", text: delta }];
+    }
+  } else if (event === "thinking_delta") {
+    const delta = String(data.delta || "");
+    const last = msg.blocks[msg.blocks.length - 1];
+    if (last && last.kind === "thinking") {
+      msg.blocks[msg.blocks.length - 1] = { ...last, text: (last.text || "") + delta };
+    } else if (delta) {
+      msg.blocks = [...msg.blocks, { kind: "thinking", text: delta }];
     }
   } else if (event === "tool_start") {
     const tool: ToolCall = {
@@ -393,6 +568,7 @@ function applyEvent(
       summary: "",
       progress: 0,
       stage: "",
+      thinking: "",
       artifacts: [],
     };
     msg.tools = [...msg.tools, tool];
@@ -402,10 +578,11 @@ function applyEvent(
     msg.tools = msg.tools.map((t, i, arr) => {
       const match = (id && t.id === id) || (!id && i === arr.length - 1);
       if (!match) return t;
+      const incoming = String(data.summary || "");
       return {
         ...t,
         status: data.ok === false ? "error" : "ok",
-        summary: String(data.summary || t.summary),
+        summary: incoming.length > (t.summary || "").length ? incoming : t.summary || incoming,
         knobs:
           data.knobs && typeof data.knobs === "object" && !Array.isArray(data.knobs)
             ? (data.knobs as Record<string, unknown>)
@@ -418,6 +595,24 @@ function applyEvent(
         ? { ...t, progress: Number(data.percent || t.progress), stage: String(data.stage || t.stage) }
         : t,
     );
+  } else if (event === "tool_thinking_delta") {
+    const delta = String(data.delta || "");
+    const idx = msg.tools.map((t) => t.status).lastIndexOf("running");
+    if (idx >= 0 && delta) {
+      msg.tools = msg.tools.map((t, i) => (i === idx ? { ...t, thinking: (t.thinking || "") + delta } : t));
+    }
+  } else if (event === "tool_text_delta") {
+    const delta = String(data.delta || "");
+    const idx = msg.tools.map((t) => t.status).lastIndexOf("running");
+    if (idx >= 0 && delta) {
+      msg.tools = msg.tools.map((t, i) => (i === idx ? { ...t, summary: (t.summary || "") + delta } : t));
+    }
+  } else if (event === "tool_text") {
+    const text = String(data.text || "");
+    const idx = msg.tools.map((t) => t.status).lastIndexOf("running");
+    if (idx >= 0) {
+      msg.tools = msg.tools.map((t, i) => (i === idx ? { ...t, summary: text } : t));
+    }
   } else if (event === "artifact" && data.artifact) {
     const art = data.artifact as Artifact;
     if (msg.tools.length) {
